@@ -266,9 +266,7 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
         .arg("-q")
         .arg(prompt)
         .arg("-Q")
-        .env("MINIMAX_API_KEY", &api_key)
-        .env("OPENAI_BASE_URL", &config.api_base)
-        .env("MINIMAX_API_BASE", &config.api_base);
+        .env("MINIMAX_API_KEY", &api_key);
 
     if !session_id.is_empty() {
         cmd.args(["--resume", session_id]);
