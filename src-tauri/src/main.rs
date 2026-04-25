@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 // ============ Types ============
 
@@ -565,17 +567,26 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     let extract_dir = data_dir.join("hermes-agent");
     let zip_path = data_dir.join("hermes-agent.zip");
 
-    // Step 1: 获取 zip 文件（优先使用软件自带的，没有则从服务器下载）
-    let resource_path = app_handle.path()
-        .resource_dir()
-        .map(|d| d.join("hermes-agent.zip"))
+    // Step 1: 获取 zip 文件
+    // 安装后默认在 exe 同目录下，也检查 resource_dir
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
 
-    let bytes = if resource_path.exists() {
-        // 安装包内置的 zip
-        std::fs::read(&resource_path).map_err(|e| format!("读取内置安装包失败: {}", e))?
+    let resource_dir = app_handle.path()
+        .resource_dir()
+        .unwrap_or_default();
+
+    let builtin_paths = [
+        exe_dir.join("hermes-agent.zip"),
+        resource_dir.join("hermes-agent.zip"),
+    ];
+
+    let bytes = if let Some(path) = builtin_paths.iter().find(|p| p.exists()) {
+        std::fs::read(path).map_err(|e| format!("读取内置安装包失败: {}", e))?
     } else {
-        // 从南京云服务器下载
+        // 从南京云服务器下载（便携版或开发环境）
         let download_url = "http://175.27.242.158:5000/download/hermes-agent.zip";
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -587,6 +598,10 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
             .send()
             .await
             .map_err(|e| format!("下载 Hermes Agent 失败: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("服务器返回错误: {}", response.status()));
+        }
 
         response
             .bytes()
@@ -600,7 +615,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
 
     // Step 2: 解压
     let extract_result = if cfg!(target_os = "windows") {
-        // Windows 用 PowerShell
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         std::process::Command::new("powershell")
             .arg("-NoProfile")
             .arg("-Command")
@@ -609,10 +624,10 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
                 zip_path.to_string_lossy(),
                 extract_dir.to_string_lossy()
             ))
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|e| format!("解压失败: {}", e))
     } else {
-        // macOS/Linux 用 unzip
         std::process::Command::new("unzip")
             .arg("-o")
             .arg(zip_path.to_string_lossy().to_string())
@@ -627,13 +642,19 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
         return Err(format!("解压失败: {}", stderr));
     }
 
+    // 验证解压后的入口文件
+    let hermes_script = extract_dir.join("hermes");
+    if !hermes_script.exists() {
+        return Err("解压完成但未找到 hermes 入口文件".to_string());
+    }
+
     // 删除 zip 文件
     std::fs::remove_file(&zip_path).ok();
 
     // Step 3: 安装 Python 依赖
     let python = find_hermes_python()?;
 
-    // 先升级 pip
+    // 升级 pip
     std::process::Command::new(&python)
         .arg("-m")
         .arg("pip")
@@ -656,7 +677,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
 
     if !install.status.success() {
         let stderr = String::from_utf8_lossy(&install.stderr);
-        // 如果直接安装失败，尝试安装核心依赖
+        // 尝试直接安装核心依赖
         let fallback = std::process::Command::new(&python)
             .arg("-m")
             .arg("pip")
@@ -684,7 +705,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     Ok(serde_json::json!({
         "success": true,
         "message": "环境安装成功",
-        "path": extract_dir.join("hermes").to_string_lossy().to_string(),
+        "path": hermes_script.to_string_lossy().to_string(),
     }))
 }
 
