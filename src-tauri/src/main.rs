@@ -614,28 +614,33 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
 
     // Step 2: 解压
-    let extract_result = if cfg!(target_os = "windows") {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        std::process::Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(format!(
-                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                zip_path.to_string_lossy(),
-                extract_dir.to_string_lossy()
-            ))
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("解压失败: {}", e))
-    } else {
-        std::process::Command::new("unzip")
-            .arg("-o")
-            .arg(zip_path.to_string_lossy().to_string())
-            .arg("-d")
-            .arg(extract_dir.to_string_lossy().to_string())
-            .output()
-            .map_err(|e| format!("解压失败: {}", e))
-    }?;
+    let extract_result = {
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            std::process::Command::new("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg(format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    zip_path.to_string_lossy(),
+                    extract_dir.to_string_lossy()
+                ))
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| format!("解压失败: {}", e))?
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("unzip")
+                .arg("-o")
+                .arg(zip_path.to_string_lossy().to_string())
+                .arg("-d")
+                .arg(extract_dir.to_string_lossy().to_string())
+                .output()
+                .map_err(|e| format!("解压失败: {}", e))?
+        }
+    };
 
     if !extract_result.status.success() {
         let stderr = String::from_utf8_lossy(&extract_result.stderr);
