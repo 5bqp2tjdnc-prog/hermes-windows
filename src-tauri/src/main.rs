@@ -283,7 +283,12 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Hermes Agent 错误: {}", stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let exit_code = output.status.code().unwrap_or(-1);
+        return Err(format!(
+            "Hermes Agent 错误 (exit:{})\n----stderr----\n{}\n----stdout----\n{}",
+            exit_code, stderr, stdout
+        ));
     }
 
     let raw = String::from_utf8_lossy(&output.stdout).to_string();
