@@ -261,7 +261,12 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
     }
 
     let mut cmd = std::process::Command::new(&python);
-    cmd.arg(&hermes)
+    // 使用 -m 方式运行 module 而非脚本文件（Windows 对无扩展名脚本兼容性差）
+    if let Some(agent_dir) = hermes.parent() {
+        cmd.env("PYTHONPATH", agent_dir.to_string_lossy().to_string());
+    }
+    cmd.arg("-m")
+        .arg("hermes_cli.main")
         .arg("chat")
         .arg("-q")
         .arg(prompt)
