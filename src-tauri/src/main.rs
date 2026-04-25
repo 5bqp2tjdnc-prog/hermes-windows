@@ -6,8 +6,6 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 
 // ============ Types ============
 
@@ -187,7 +185,9 @@ fn find_hermes_python() -> Result<PathBuf, String> {
     // 查找顺序：
     // 1. 和 exe 同目录的 python/python.exe
     // 2. 环境变量 HERMES_PYTHON
-    // 3. 系统的 python3
+    // 3. where.exe python（Windows，查找 PATH 中的 Python 全路径）
+    // 4. 常见安装目录
+    // 5. python.exe（靠系统 PATH 搜索）
 
     let exe_dir = std::env::current_exe()
         .ok()
@@ -206,11 +206,81 @@ fn find_hermes_python() -> Result<PathBuf, String> {
         }
     }
 
-    // Mac 开发环境用系统 Python
+    // Windows：用 where.exe 查找 python 的全路径
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = std::process::Command::new("where.exe")
+            .arg("python.exe")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+        {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .next()
+                    .map(|l| l.trim().to_string())
+                    .unwrap_or_default();
+                if !path.is_empty() {
+                    let p = PathBuf::from(&path);
+                    if p.exists() {
+                        return Ok(p);
+                    }
+                }
+            }
+        }
+
+        // 常见 Python 安装路径
+        let common_paths = [
+            "C:\\Python313\\python.exe",
+            "C:\\Python312\\python.exe",
+            "C:\\Python311\\python.exe",
+            "C:\\Python310\\python.exe",
+            "C:\\Users\\laomashitu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+            "C:\\Users\\laomashitu\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+            "C:\\Users\\laomashitu\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+            // 当前用户 AppData
+        ];
+        for p in &common_paths {
+            let pb = PathBuf::from(p);
+            if pb.exists() {
+                return Ok(pb);
+            }
+        }
+
+        // 从 LOCALAPPDATA 扫描 Python 安装
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let py_base = PathBuf::from(local_app_data).join("Programs\\Python");
+            if py_base.exists() {
+                if let Ok(entries) = std::fs::read_dir(&py_base) {
+                    for entry in entries.flatten() {
+                        let python_exe = entry.path().join("python.exe");
+                        if python_exe.exists() {
+                            return Ok(python_exe);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let system = PathBuf::from(
         if cfg!(target_os = "windows") { "python.exe" } else { "python3" }
     );
-    Ok(system)
+
+    // 验证 python 可执行
+    if std::process::Command::new(&system)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(system);
+    }
+
+    Err("未找到 Python，请先安装 Python 3.10+".to_string())
 }
 
 fn find_hermes_agent() -> Result<PathBuf, String> {
@@ -283,8 +353,8 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
 
     #[cfg(target_os = "windows")]
     {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        // 禁用 CREATE_NO_WINDOW — 该标志在某些 Windows 环境会导致 python.exe
+        // 返回 exit code 9009（无法正常启动）。黑窗口只是瞬间闪烁，不影响使用。
     }
 
     if !session_id.is_empty() {
