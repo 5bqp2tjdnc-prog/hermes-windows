@@ -216,19 +216,27 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
 
-    // 和 exe 同目录的 hermes-agent/
+    // 1. 和 exe 同目录的 hermes-agent/
     let bundled = exe_dir.join("hermes-agent").join("hermes");
     if bundled.exists() {
         return Ok(bundled);
     }
 
-    // Mac 开发环境
+    // 2. 应用数据目录（setup_hermes_environment 下载的位置）
+    if let Ok(data_dir) = get_data_dir() {
+        let data_path = data_dir.join("hermes-agent").join("hermes");
+        if data_path.exists() {
+            return Ok(data_path);
+        }
+    }
+
+    // 3. Mac 开发环境
     let dev_path = PathBuf::from("/Users/laomashitu/hermes-agent/hermes");
     if dev_path.exists() {
         return Ok(dev_path);
     }
 
-    // 环境变量
+    // 4. 环境变量
     if let Ok(env_path) = std::env::var("HERMES_AGENT") {
         let p = PathBuf::from(env_path);
         if p.exists() {
@@ -236,7 +244,7 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
         }
     }
 
-    Err("未找到 Hermes Agent，请确认 Python 环境已正确安装".to_string())
+    Err("未找到 Hermes Agent，请先安装运行环境".to_string())
 }
 
 fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), String> {
@@ -487,7 +495,11 @@ async fn save_api_config(api_key: String, api_base: String, model: String) -> Re
 
 #[tauri::command]
 async fn get_api_config() -> Result<AppConfig, String> {
-    AppConfig::load()
+    let mut config = AppConfig::load()?;
+    if config.api_key.is_empty() && !BUILTIN_API_KEY.is_empty() {
+        config.api_key = BUILTIN_API_KEY.to_string();
+    }
+    Ok(config)
 }
 
 #[tauri::command]
@@ -540,6 +552,125 @@ async fn check_hermes_environment() -> Result<serde_json::Value, String> {
     }
 
     Ok(status)
+}
+
+// ============ Environment Setup ============
+
+#[tauri::command]
+async fn setup_hermes_environment() -> Result<serde_json::Value, String> {
+    let data_dir = get_data_dir()?;
+    let extract_dir = data_dir.join("hermes-agent");
+    let zip_path = data_dir.join("hermes-agent.zip");
+    let download_url = "http://43.128.59.90:18789/download/hermes-agent.zip";
+
+    // Step 1: Download
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let response = client
+        .get(download_url)
+        .send()
+        .await
+        .map_err(|e| format!("下载 Hermes Agent 失败: {}", e))?;
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("读取下载数据失败: {}", e))?;
+
+    // 写入临时文件
+    std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
+
+    // Step 2: 解压
+    let extract_result = if cfg!(target_os = "windows") {
+        // Windows 用 PowerShell
+        std::process::Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(format!(
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                zip_path.to_string_lossy(),
+                extract_dir.to_string_lossy()
+            ))
+            .output()
+            .map_err(|e| format!("解压失败: {}", e))
+    } else {
+        // macOS/Linux 用 unzip
+        std::process::Command::new("unzip")
+            .arg("-o")
+            .arg(zip_path.to_string_lossy().to_string())
+            .arg("-d")
+            .arg(extract_dir.to_string_lossy().to_string())
+            .output()
+            .map_err(|e| format!("解压失败: {}", e))
+    }?;
+
+    if !extract_result.status.success() {
+        let stderr = String::from_utf8_lossy(&extract_result.stderr);
+        return Err(format!("解压失败: {}", stderr));
+    }
+
+    // 删除 zip 文件
+    std::fs::remove_file(&zip_path).ok();
+
+    // Step 3: 安装 Python 依赖
+    let python = find_hermes_python()?;
+
+    // 先升级 pip
+    std::process::Command::new(&python)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg("--upgrade")
+        .arg("pip")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok();
+
+    // 安装 Hermes Agent
+    let install = std::process::Command::new(&python)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg(extract_dir.to_string_lossy().to_string())
+        .output()
+        .map_err(|e| format!("运行 pip install 失败: {}", e))?;
+
+    if !install.status.success() {
+        let stderr = String::from_utf8_lossy(&install.stderr);
+        // 如果直接安装失败，尝试安装核心依赖
+        let fallback = std::process::Command::new(&python)
+            .arg("-m")
+            .arg("pip")
+            .arg("install")
+            .arg("openai")
+            .arg("anthropic")
+            .arg("httpx[socks]")
+            .arg("rich")
+            .arg("fire")
+            .arg("tenacity")
+            .arg("pyyaml")
+            .arg("requests")
+            .arg("jinja2")
+            .arg("pydantic")
+            .arg("prompt_toolkit")
+            .arg("python-dotenv")
+            .output()
+            .map_err(|e| format!("安装核心依赖失败: {}", e))?;
+        if !fallback.status.success() {
+            let fb_stderr = String::from_utf8_lossy(&fallback.stderr);
+            return Err(format!("安装 Python 依赖失败: {}", fb_stderr));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "success": true,
+        "message": "环境安装成功",
+        "path": extract_dir.join("hermes").to_string_lossy().to_string(),
+    }))
 }
 
 // ============ Feishu ============
@@ -624,6 +755,7 @@ fn main() {
             save_feishu_config,
             test_feishu,
             check_hermes_environment,
+            setup_hermes_environment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -412,6 +412,12 @@
                   </span>
                   <span class="env-check-path">{{ envStatus.python_path || '-' }}</span>
                 </div>
+                <div class="env-item" v-if="!envStatus.python_ok">
+                  <span class="env-hint">首次使用需安装 Python 3.11+</span>
+                  <a class="btn btn-sm btn-outline" href="https://www.python.org/downloads/" target="_blank">
+                    下载 Python
+                  </a>
+                </div>
                 <div class="env-item">
                   <span class="env-check-label">Hermes Agent</span>
                   <span class="env-check-status" :class="envStatus.agent_ok ? 'ok' : 'fail'">
@@ -425,14 +431,20 @@
                   <span class="env-check-status ok">{{ envStatus.version }}</span>
                 </div>
               </div>
+              <div class="env-actions">
+                <button class="btn btn-secondary" @click="checkEnvironment" :disabled="envChecking">
+                  <span v-if="envChecking" class="btn-spinner"></span>
+                  重新检查
+                </button>
+                <button v-if="!envStatus.agent_ok" class="btn btn-primary" @click="setupEnvironment" :disabled="isSettingUp || !envStatus.python_ok">
+                  <span v-if="isSettingUp" class="btn-spinner"></span>
+                  {{ isSettingUp ? '安装中...' : '下载安装 Hermes Agent' }}
+                </button>
+              </div>
               <div class="env-overall" :class="envStatus.ready ? 'ready' : 'not-ready'">
                 <span class="overall-dot"></span>
-                {{ envStatus.ready ? '运行环境就绪，可以开始对话' : '运行环境未就绪，请检查安装' }}
+                {{ envStatus.ready ? '运行环境就绪，可以开始对话' : '运行环境未就绪' }}
               </div>
-              <button class="btn btn-secondary" @click="checkEnvironment" :disabled="envChecking">
-                <span v-if="envChecking" class="btn-spinner"></span>
-                重新检查
-              </button>
             </div>
           </section>
 
@@ -534,6 +546,7 @@ const apiConfig = ref({
 
 // Environment
 const envChecking = ref(false)
+const isSettingUp = ref(false)
 const envStatus = ref({
   python_ok: false,
   agent_ok: false,
@@ -731,6 +744,20 @@ async function checkEnvironment() {
     showToast('环境检查失败: ' + e, 'error')
   } finally {
     envChecking.value = false
+  }
+}
+
+async function setupEnvironment() {
+  isSettingUp.value = true
+  try {
+    const result: any = await invoke('setup_hermes_environment')
+    showToast(result.message, 'success')
+    // 安装后重新检查环境
+    await checkEnvironment()
+  } catch (e: any) {
+    showToast('安装失败: ' + e, 'error')
+  } finally {
+    isSettingUp.value = false
   }
 }
 
@@ -1955,6 +1982,41 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.env-hint {
+  color: var(--warn);
+  font-size: 11px;
+  flex: 1;
+}
+
+.env-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.2s;
+}
+
+.btn-outline:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .env-overall {
