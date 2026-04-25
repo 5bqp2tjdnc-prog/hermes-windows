@@ -261,18 +261,25 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
     }
 
     let mut cmd = std::process::Command::new(&python);
-    // 使用 -m 方式运行 module 而非脚本文件（Windows 对无扩展名脚本兼容性差）
+    cmd.env("MINIMAX_API_KEY", &api_key)
+        .env("MINIMAX_CN_API_KEY", &api_key)
+        .env("HERMES_Q", prompt);
+    // 使用 -c 方式直接调用 cli.main()，完全规避 Windows 上无扩展名脚本执行问题
     if let Some(agent_dir) = hermes.parent() {
+        let agent_dir_str = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let python_code = format!(
+            "import sys; sys.path.insert(0, '{}'); import os; from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=True)",
+            agent_dir_str
+        );
         cmd.env("PYTHONPATH", agent_dir.to_string_lossy().to_string());
+        cmd.arg("-c").arg(&python_code);
+    } else {
+        cmd.arg(&hermes)
+            .arg("chat")
+            .arg("-q")
+            .arg(prompt)
+            .arg("-Q");
     }
-    cmd.arg("-m")
-        .arg("hermes_cli.main")
-        .arg("chat")
-        .arg("-q")
-        .arg(prompt)
-        .arg("-Q")
-        .env("MINIMAX_API_KEY", &api_key)
-        .env("MINIMAX_CN_API_KEY", &api_key);
 
     #[cfg(target_os = "windows")]
     {
