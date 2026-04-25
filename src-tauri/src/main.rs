@@ -183,24 +183,34 @@ impl AppConfig {
 
 // ============ Hermes Agent Subprocess ============
 
-fn find_hermes_python() -> Result<PathBuf, String> {
-    // 查找顺序：
-    // 1. 和 exe 同目录的 python/python.exe
-    // 2. 环境变量 HERMES_PYTHON
-    // 3. where.exe python（Windows，查找 PATH 中的 Python 全路径）
-    // 4. 常见安装目录
-    // 5. python.exe（靠系统 PATH 搜索）
+/// 创建一个配置好的 Python 进程 Command。
+/// 如果找到的是 `py.exe`（Python Launcher），会自动添加 `-3` 参数。
+fn new_python_cmd(python: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(python);
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(name) = python.file_name().and_then(|n| n.to_str()) {
+            if name.eq_ignore_ascii_case("py.exe") || name.eq_ignore_ascii_case("py") {
+                cmd.arg("-3");
+            }
+        }
+    }
+    cmd
+}
 
+fn find_hermes_python() -> Result<PathBuf, String> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
 
+    // 1. 和 exe 同目录的 python/python.exe
     let bundled = exe_dir.join("python").join("python.exe");
     if bundled.exists() {
         return Ok(bundled);
     }
 
+    // 2. 环境变量 HERMES_PYTHON
     if let Ok(env_py) = std::env::var("HERMES_PYTHON") {
         let p = PathBuf::from(env_py);
         if p.exists() {
@@ -208,9 +218,59 @@ fn find_hermes_python() -> Result<PathBuf, String> {
         }
     }
 
-    // Windows：用 where.exe 查找 python 的全路径
     #[cfg(target_os = "windows")]
     {
+        // 辅助: 测试 Python 确实能启动 (验证 --version 成功)
+        fn python_works(path: &std::path::Path) -> bool {
+            std::process::Command::new(path)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+
+        // 3. py.exe (Python Launcher, C:\Windows\ 下) — 绕过 WindowsApps 执行别名
+        //    python.org 安装器默认安装这个启动器，它通过注册表查找真实 Python
+        if python_works(Path::new("py.exe")) {
+            return Ok(PathBuf::from("py.exe"));
+        }
+
+        // 4. Program Files 系统级安装
+        let program_paths = [
+            "C:\\Program Files\\Python313\\python.exe",
+            "C:\\Program Files\\Python312\\python.exe",
+            "C:\\Program Files\\Python311\\python.exe",
+            "C:\\Program Files\\Python310\\python.exe",
+            "C:\\Python313\\python.exe",
+            "C:\\Python312\\python.exe",
+            "C:\\Python311\\python.exe",
+            "C:\\Python310\\python.exe",
+        ];
+        for p in &program_paths {
+            let pb = PathBuf::from(p);
+            if pb.exists() && python_works(&pb) {
+                return Ok(pb);
+            }
+        }
+
+        // 5. 当前用户的 AppData Python 安装 (Python.org 安装器用户安装默认位置)
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let py_base = PathBuf::from(local_app_data).join("Programs\\Python");
+            if py_base.exists() {
+                if let Ok(entries) = std::fs::read_dir(&py_base) {
+                    for entry in entries.flatten() {
+                        let python_exe = entry.path().join("python.exe");
+                        if python_exe.exists() && python_works(&python_exe) {
+                            return Ok(python_exe);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. where.exe python.exe — 跳过 WindowsApps 存根，验证每个结果
         if let Ok(output) = std::process::Command::new("where.exe")
             .arg("python.exe")
             .stdout(std::process::Stdio::piped())
@@ -218,59 +278,25 @@ fn find_hermes_python() -> Result<PathBuf, String> {
             .output()
         {
             if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .next()
-                    .map(|l| l.trim().to_string())
-                    .unwrap_or_default();
-                if !path.is_empty() {
-                    let p = PathBuf::from(&path);
-                    if p.exists() {
-                        return Ok(p);
+                for line in String::from_utf8_lossy(&output.stdout).lines() {
+                    let path = line.trim().to_string();
+                    if path.is_empty() || path.contains("WindowsApps") {
+                        continue;
                     }
-                }
-            }
-        }
-
-        // 常见 Python 安装路径
-        let common_paths = [
-            "C:\\Python313\\python.exe",
-            "C:\\Python312\\python.exe",
-            "C:\\Python311\\python.exe",
-            "C:\\Python310\\python.exe",
-            "C:\\Users\\laomashitu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
-            "C:\\Users\\laomashitu\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
-            "C:\\Users\\laomashitu\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
-            // 当前用户 AppData
-        ];
-        for p in &common_paths {
-            let pb = PathBuf::from(p);
-            if pb.exists() {
-                return Ok(pb);
-            }
-        }
-
-        // 从 LOCALAPPDATA 扫描 Python 安装
-        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            let py_base = PathBuf::from(local_app_data).join("Programs\\Python");
-            if py_base.exists() {
-                if let Ok(entries) = std::fs::read_dir(&py_base) {
-                    for entry in entries.flatten() {
-                        let python_exe = entry.path().join("python.exe");
-                        if python_exe.exists() {
-                            return Ok(python_exe);
-                        }
+                    let pb = PathBuf::from(&path);
+                    if pb.exists() && python_works(&pb) {
+                        return Ok(pb);
                     }
                 }
             }
         }
     }
 
+    // 7. python.exe/python3（靠系统 PATH 搜索，需验证）
     let system = PathBuf::from(
         if cfg!(target_os = "windows") { "python.exe" } else { "python3" }
     );
 
-    // 验证 python 可执行
     if std::process::Command::new(&system)
         .arg("--version")
         .stdout(std::process::Stdio::null())
@@ -332,16 +358,22 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
         return Err("请先在设置中配置 API Key，或联系作者获取内置 Key".to_string());
     }
 
-    let mut cmd = std::process::Command::new(&python);
+    let mut cmd = new_python_cmd(&python);
+
     cmd.env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
         .env("HERMES_Q", prompt);
     // 使用 -c 方式直接调用 cli.main()，完全规避 Windows 上无扩展名脚本执行问题
     if let Some(agent_dir) = hermes.parent() {
-        let agent_dir_str = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let agent_dir_escaped = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let resume_arg = if !session_id.is_empty() {
+            format!(", resume='{}'", session_id.replace('\'', "\\'"))
+        } else {
+            String::new()
+        };
         let python_code = format!(
-            "import sys; sys.path.insert(0, '{}'); import os; from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=True)",
-            agent_dir_str
+            "import sys; sys.path.insert(0, '{}'); import os; from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=True{})",
+            agent_dir_escaped, resume_arg
         );
         cmd.env("PYTHONPATH", agent_dir.to_string_lossy().to_string());
         cmd.arg("-c").arg(&python_code);
@@ -351,16 +383,15 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
             .arg("-q")
             .arg(prompt)
             .arg("-Q");
+        if !session_id.is_empty() {
+            cmd.args(["--resume", session_id]);
+        }
     }
 
     #[cfg(target_os = "windows")]
     {
-        // 禁用 CREATE_NO_WINDOW — 该标志在某些 Windows 环境会导致 python.exe
-        // 返回 exit code 9009（无法正常启动）。黑窗口只是瞬间闪烁，不影响使用。
-    }
-
-    if !session_id.is_empty() {
-        cmd.args(["--resume", session_id]);
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     let output = cmd.output().map_err(|e| format!("启动 Hermes Agent 失败: {}", e))?;
@@ -639,7 +670,7 @@ async fn check_hermes_environment() -> Result<serde_json::Value, String> {
 
     if let Ok(ref p) = python {
         if let Ok(ref a) = agent {
-            let test = std::process::Command::new(p)
+            let test = new_python_cmd(p)
                 .arg(a)
                 .arg("--version")
                 .output();
@@ -754,7 +785,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     let python = find_hermes_python()?;
 
     // 升级 pip
-    std::process::Command::new(&python)
+    new_python_cmd(&python)
         .arg("-m")
         .arg("pip")
         .arg("install")
@@ -766,7 +797,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
         .ok();
 
     // 安装 Hermes Agent
-    let install = std::process::Command::new(&python)
+    let install = new_python_cmd(&python)
         .arg("-m")
         .arg("pip")
         .arg("install")
@@ -777,7 +808,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     if !install.status.success() {
         let stderr = String::from_utf8_lossy(&install.stderr);
         // 尝试直接安装核心依赖
-        let fallback = std::process::Command::new(&python)
+        let fallback = new_python_cmd(&python)
             .arg("-m")
             .arg("pip")
             .arg("install")
