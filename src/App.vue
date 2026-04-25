@@ -537,7 +537,7 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'info',
 const showApiKey = ref(false)
 const apiConfig = ref({
   api_key: '',
-  api_base: 'https://mcp.mxai.cn/mcp/api/',
+  api_base: 'https://api.minimax.chat/v1',
   model: 'MiniMax-Text-01',
   feishu_app_id: '',
   feishu_app_secret: '',
