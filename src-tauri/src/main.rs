@@ -266,7 +266,14 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
         .arg("-q")
         .arg(prompt)
         .arg("-Q")
-        .env("MINIMAX_API_KEY", &api_key);
+        .env("MINIMAX_API_KEY", &api_key)
+        .env("MINIMAX_CN_API_KEY", &api_key);
+
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     if !session_id.is_empty() {
         cmd.args(["--resume", session_id]);
