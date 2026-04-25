@@ -67,7 +67,7 @@ struct NanjingActivate {
 
 const ACTIVATION_SALT: &[u8] = b"HermesAI_v1_2025";
 const LICENSE_FILE: &str = "license.dat";
-const DEFAULT_API_BASE: &str = "https://api.minimax.chat/v1";
+const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic";
 const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
 
 // 内置 MiniMax API Key（发布前确认额度充足）
@@ -263,7 +263,9 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
         .arg("-q")
         .arg(prompt)
         .arg("-Q")
-        .env("MINIMAX_API_KEY", &api_key);
+        .env("MINIMAX_API_KEY", &api_key)
+        .env("OPENAI_BASE_URL", &config.api_base)
+        .env("MINIMAX_API_BASE", &config.api_base);
 
     if !session_id.is_empty() {
         cmd.args(["--resume", session_id]);
