@@ -1,0 +1,96 @@
+name: Build Hermes Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rust toolchain
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # Node.js for frontend
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Install frontend dependencies
+      - name: Install frontend deps
+        run: npm ci
+
+      # Rust cache
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Install Tauri CLI
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      # Build (Tauri handles both frontend + backend)
+      - name: Build Tauri app
+        run: cargo tauri build --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # Upload artifact
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-Windows-Installer
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+
+      # Upload portable (if available)
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-Windows-Portable
+          path: src-tauri/target/release/hermes-windows.exe
+          if-no-files-found: warn
+
+  # Build on macOS to verify it compiles
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Build macOS app
+        run: cargo tauri build --bundles dmg
