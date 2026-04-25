@@ -37,6 +37,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": ["hermes-agent.zip"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

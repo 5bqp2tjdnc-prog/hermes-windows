@@ -36,3 +36,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Bundled runtime resources (downloaded during CI build)
+src-tauri/hermes-agent.zip

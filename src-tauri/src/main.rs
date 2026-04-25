@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tauri::Manager;
 
 // ============ Types ============
 
@@ -559,28 +560,40 @@ async fn check_hermes_environment() -> Result<serde_json::Value, String> {
 // ============ Environment Setup ============
 
 #[tauri::command]
-async fn setup_hermes_environment() -> Result<serde_json::Value, String> {
+async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let data_dir = get_data_dir()?;
     let extract_dir = data_dir.join("hermes-agent");
     let zip_path = data_dir.join("hermes-agent.zip");
-    let download_url = "http://43.128.59.90:18789/download/hermes-agent.zip";
 
-    // Step 1: Download
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    // Step 1: 获取 zip 文件（优先使用软件自带的，没有则从服务器下载）
+    let resource_path = app_handle.path()
+        .resource_dir()
+        .map(|d| d.join("hermes-agent.zip"))
+        .unwrap_or_default();
 
-    let response = client
-        .get(download_url)
-        .send()
-        .await
-        .map_err(|e| format!("下载 Hermes Agent 失败: {}", e))?;
+    let bytes = if resource_path.exists() {
+        // 安装包内置的 zip
+        std::fs::read(&resource_path).map_err(|e| format!("读取内置安装包失败: {}", e))?
+    } else {
+        // 从南京云服务器下载
+        let download_url = "http://175.27.242.158:5000/download/hermes-agent.zip";
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("HTTP client error: {}", e))?;
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("读取下载数据失败: {}", e))?;
+        let response = client
+            .get(download_url)
+            .send()
+            .await
+            .map_err(|e| format!("下载 Hermes Agent 失败: {}", e))?;
+
+        response
+            .bytes()
+            .await
+            .map_err(|e| format!("读取下载数据失败: {}", e))?
+            .to_vec()
+    };
 
     // 写入临时文件
     std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;

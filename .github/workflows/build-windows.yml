@@ -30,6 +30,12 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      # Download bundled Hermes Agent runtime resources
+      - name: Download Hermes Agent runtime
+        run: |
+          curl -L -o src-tauri/hermes-agent.zip http://175.27.242.158:5000/download/hermes-agent.zip
+        shell: bash
+
       # Rust cache
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -83,6 +89,12 @@ jobs:
 
       - name: Install frontend deps
         run: npm ci
+
+      # Download bundled Hermes Agent runtime resources
+      - name: Download Hermes Agent runtime
+        run: |
+          curl -L -o src-tauri/hermes-agent.zip http://175.27.242.158:5000/download/hermes-agent.zip
+        shell: bash
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
