@@ -50,25 +50,31 @@ jobs:
           fi
         shell: bash
 
-      # Build Web UI from hermes-agent source (output goes to hermes_cli/web_dist/)
+      # Build Web UI from hermes-agent source
       - name: Build Web UI
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p /tmp/hermes-web
-          cd /tmp/hermes-web
-          unzip -o "$GITHUB_WORKSPACE/src-tauri/hermes-agent.zip"
-          cd web
+          $zipPath = "$env:GITHUB_WORKSPACE\src-tauri\hermes-agent.zip"
+          $tempDir = "$env:TEMP\hermes-web"
+          New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+          # Extract the zip
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          $extractDir = "$tempDir\extract"
+          [System.IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $extractDir)
+          $zip.Dispose()
+          # Build the web UI
+          Push-Location "$extractDir\web"
           npm ci
           npm run build
-          cd ..
-          # Build output is in hermes_cli/web_dist/ (per vite.config.ts)
-          # The Rust launch_dashboard looks for web_dist/ at zip root, so:
-          mv hermes_cli/web_dist web_dist
-          # Re-zip with web_dist included
-          zip -r "$GITHUB_WORKSPACE/src-tauri/hermes-agent.zip" web_dist
-          rm -rf /tmp/hermes-web
-        env:
-          CI: true
+          Pop-Location
+          # Build output goes to hermes_cli/web_dist/ per vite.config.ts
+          # Move to web_dist/ at root (what Rust launch_dashboard expects)
+          Move-Item "$extractDir\hermes_cli\web_dist" "$extractDir\web_dist"
+          # Re-zip using .NET (preserves structure perfectly)
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($extractDir, $zipPath)
+          Remove-Item -Recurse -Force $tempDir
 
       # Rust cache
       - name: Rust cache
