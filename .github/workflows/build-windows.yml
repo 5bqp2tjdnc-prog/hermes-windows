@@ -104,10 +104,24 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # Download bundled Hermes Agent runtime resources
+      # Download bundled Hermes Agent runtime resources (with retries)
       - name: Download Hermes Agent runtime
         run: |
-          curl -L -o src-tauri/hermes-agent.zip http://175.27.242.158:5000/download/hermes-agent.zip
+          if [ -f src-tauri/hermes-agent.zip ]; then
+            echo "hermes-agent.zip already exists in checkout, skipping download"
+          else
+            for i in 1 2 3; do
+              echo "Download attempt $i/3..."
+              curl -L --connect-timeout 30 --max-time 120 \
+                -o src-tauri/hermes-agent.zip \
+                http://175.27.242.158:5000/download/hermes-agent.zip && break
+              sleep 10
+            done
+            if [ ! -f src-tauri/hermes-agent.zip ]; then
+              echo "Failed to download hermes-agent.zip after 3 attempts"
+              exit 1
+            fi
+          fi
         shell: bash
 
       - name: Rust cache
