@@ -348,9 +348,70 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
     Err("未找到 Hermes Agent，请先安装运行环境".to_string())
 }
 
+fn ensure_hermes_deps(python: &Path, agent_dir: &Path) -> Result<(), String> {
+    // 检查核心 Python 依赖是否已安装
+    let check = new_python_cmd(python)
+        .arg("-c")
+        .arg("import yaml, prompt_toolkit, openai, rich")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("检查依赖失败: {}", e))?;
+
+    if check.status.success() {
+        return Ok(());
+    }
+
+    // 缺失依赖，自动安装
+    let install = new_python_cmd(python)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg(agent_dir.to_string_lossy().to_string())
+        .output()
+        .map_err(|e| format!("自动安装 Hermes Agent 依赖失败: {}", e))?;
+
+    if install.status.success() {
+        return Ok(());
+    }
+
+    // 备用：逐个安装核心依赖
+    let fallback = new_python_cmd(python)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg("openai")
+        .arg("anthropic")
+        .arg("httpx[socks]")
+        .arg("rich")
+        .arg("fire")
+        .arg("tenacity")
+        .arg("pyyaml")
+        .arg("requests")
+        .arg("jinja2")
+        .arg("pydantic")
+        .arg("prompt_toolkit")
+        .arg("python-dotenv")
+        .output()
+        .map_err(|e| format!("安装核心依赖失败: {}", e))?;
+
+    if !fallback.status.success() {
+        let stderr = String::from_utf8_lossy(&fallback.stderr);
+        return Err(format!("自动安装 Python 依赖失败，请尝试在设置页面重新安装运行环境:\n{}", stderr));
+    }
+
+    Ok(())
+}
+
 fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), String> {
     let python = find_hermes_python()?;
     let hermes = find_hermes_agent()?;
+
+    // 自动检查并安装 Python 依赖（如果缺失）
+    if let Some(agent_dir) = hermes.parent() {
+        ensure_hermes_deps(&python, agent_dir)?;
+    }
+
     let config = AppConfig::load()?;
     let api_key = config.effective_api_key();
 
