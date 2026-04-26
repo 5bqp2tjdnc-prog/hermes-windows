@@ -1186,8 +1186,9 @@ async fn save_api_config(api_key: String, api_base: String, model: String) -> Re
 #[tauri::command]
 async fn get_api_config() -> Result<AppConfig, String> {
     let mut config = AppConfig::load()?;
+    // 使用内置 Key 时不给前端返回真实 Key，防止泄露
     if config.api_key.is_empty() && !BUILTIN_API_KEY.is_empty() {
-        config.api_key = BUILTIN_API_KEY.to_string();
+        config.api_key = String::new();
     }
     Ok(config)
 }
