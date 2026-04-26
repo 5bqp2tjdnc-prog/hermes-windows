@@ -328,6 +328,10 @@
                   <span class="info-label">激活码</span>
                   <span class="info-value mono">{{ licenseInfo.license_key?.substring(0, 20) }}...</span>
                 </div>
+                <div class="info-item">
+                  <span class="info-label">联系方式</span>
+                  <span class="info-value" style="color: var(--gold);">微信/电话：13213181166</span>
+                </div>
               </div>
               <button class="btn btn-danger" @click="doDeactivate">注销许可证</button>
             </div>
@@ -652,7 +656,7 @@ async function sendMessage() {
   messages.value.push({ role: 'user', content: userMsg })
   inputText.value = ''
   isLoading.value = true
-  scrollToBottom()
+  scrollToBottomWithRetry()
 
   autoResizeTextarea()
 
@@ -665,11 +669,13 @@ async function sendMessage() {
     if (result.session_id) {
       sessionId.value = result.session_id
     }
+    // 内容已推入，等 Vue 渲染后立刻滚到底
+    nextTick(() => scrollToBottomWithRetry())
   } catch (e: any) {
     messages.value.push({ role: 'assistant', content: '', error: e.toString() })
+    nextTick(() => scrollToBottomWithRetry())
   } finally {
     isLoading.value = false
-    nextTick(() => scrollToBottom())
   }
 }
 
@@ -677,7 +683,7 @@ function newChat() {
   messages.value = []
   sessionId.value = ''
   inputText.value = ''
-  nextTick(() => scrollToBottom())
+  nextTick(() => scrollToBottomWithRetry())
 }
 
 function autoResizeTextarea() {
@@ -691,6 +697,14 @@ function autoResizeTextarea() {
 function scrollToBottom() {
   if (messagesContainer.value) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+  }
+}
+
+// 带重试的滚动，确保内容渲染完成后滚到底
+function scrollToBottomWithRetry(retries = 3) {
+  scrollToBottom()
+  if (retries > 0) {
+    setTimeout(() => scrollToBottomWithRetry(retries - 1), 100)
   }
 }
 
