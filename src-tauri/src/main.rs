@@ -86,7 +86,7 @@ struct NanjingActivate {
 
 const ACTIVATION_SALT: &[u8] = b"HermesAI_v1_2025";
 const LICENSE_FILE: &str = "license.dat";
-const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic/v1";
+const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/v1";
 const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
 
 // 内置 MiniMax API Key（发布前确认额度充足）
@@ -867,9 +867,9 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
         content: prompt.clone(),
     });
 
-    // 清理 API base 路径
+    // MiniMax 使用 OpenAI 兼容 API
     let base = config.api_base.trim_end_matches('/');
-    let url = format!("{}/messages", base);
+    let url = format!("{}/chat/completions", base);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -884,8 +884,7 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
 
     let response = client
         .post(&url)
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01")
+        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&request_body)
         .send()
@@ -904,11 +903,11 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
         .await
         .map_err(|e| format!("解析 API 响应失败: {}", e))?;
 
-    // Anthropic 格式: body["content"][0]["text"]
-    let text = body["content"]
+    // OpenAI 格式: body["choices"][0]["message"]["content"]
+    let text = body["choices"]
         .as_array()
         .and_then(|arr| arr.first())
-        .and_then(|block| block["text"].as_str())
+        .and_then(|choice| choice["message"]["content"].as_str())
         .unwrap_or("")
         .to_string();
 
