@@ -1448,6 +1448,80 @@ async fn send_feishu_message(token: &str, chat_id: &str, content: &str) -> Resul
     Ok(())
 }
 
+// ============ Dashboard Launch ============
+
+/// 启动 Hermes Agent Dashboard 并在浏览器中打开
+#[tauri::command]
+async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let python = find_hermes_python()?;
+    let hermes = find_hermes_agent()?;
+    let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
+
+    // 检查 web_dist 是否存在，构建 web UI 前端
+    let web_dist = agent_dir.join("web_dist");
+    let web_src = agent_dir.join("web");
+    if !web_dist.exists() && web_src.exists() {
+        // 尝试用 npm 构建 web UI
+        let npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+        let mut build = std::process::Command::new(npm);
+        build.args(["run", "build"]).current_dir(&web_src);
+        #[cfg(target_os = "windows")]
+        build.creation_flags(0x08000000);
+        let output = build.output().map_err(|e| format!("构建 Web UI 失败: {}", e))?;
+        if !output.status.success() {
+            return Err(format!("构建 Web UI 失败，请确保已安装 Node.js"));
+        }
+    }
+
+    if !web_dist.exists() {
+        return Err("Web UI 文件未找到，请运行环境安装".to_string());
+    }
+
+    // 启动 Hermes Dashboard 进程（后台运行）
+    let port = 9119;
+    let mut cmd = std::process::Command::new(&python);
+    cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", &port.to_string(), "--no-open"])
+        .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let child = cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
+
+    // 等待服务就绪（最多 15 秒）
+    let url = format!("http://127.0.0.1:{}/api/status", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|_| "HTTP 客户端错误")?;
+
+    let mut ready = false;
+    for _ in 0..15 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if client.get(&url).send().await.is_ok() {
+            ready = true;
+            break;
+        }
+    }
+
+    if !ready {
+        return Err("Dashboard 启动超时".to_string());
+    }
+
+    // 在浏览器中打开
+    let dashboard_url = format!("http://127.0.0.1:{}", port);
+    if let Err(e) = open::that(&dashboard_url) {
+        eprintln!("打开浏览器失败: {}", e);
+    }
+
+    Ok(serde_json::json!({
+        "success": true,
+        "url": dashboard_url,
+        "pid": child.id(),
+    }))
+}
+
 // ============ Main ============
 
 fn main() {
@@ -1467,6 +1541,7 @@ fn main() {
             chat_completion,
             chat_stream,
             chat_direct,
+            launch_dashboard,
             save_api_config,
             get_api_config,
             save_feishu_config,

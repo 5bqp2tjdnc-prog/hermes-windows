@@ -26,6 +26,21 @@
         </button>
         <button
           class="nav-item"
+          :class="{ active: currentView === 'dashboard-launch' }"
+          @click="launchDashboard"
+          :disabled="!envReady"
+        >
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="16 3 21 3 21 8"/>
+            <line x1="4" y1="20" x2="21" y2="3"/>
+            <polyline points="21 16 21 21 16 21"/>
+            <line x1="15" y1="15" x2="21" y2="21"/>
+            <line x1="4" y1="4" x2="9" y2="9"/>
+          </svg>
+          Web UI
+        </button>
+        <button
+          class="nav-item"
           :class="{ active: currentView === 'settings' }"
           @click="currentView = 'settings'"
         >
@@ -232,6 +247,65 @@
             </svg>
             <span>请先激活许可证</span>
             <button class="goto-btn" @click="currentView = 'settings'">前往激活</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dashboard Launch View -->
+      <div v-else-if="currentView === 'dashboard-launch'" class="chat-view">
+        <div class="chat-header">
+          <div class="chat-header-left">
+            <h2>
+              <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="16 3 21 3 21 8"/>
+                <line x1="4" y1="20" x2="21" y2="3"/>
+                <polyline points="21 16 21 21 16 21"/>
+                <line x1="15" y1="15" x2="21" y2="21"/>
+                <line x1="4" y1="4" x2="9" y2="9"/>
+              </svg>
+              Web UI
+            </h2>
+          </div>
+        </div>
+        <div class="chat-messages">
+          <div class="welcome-screen">
+            <div class="welcome-logo">
+              <span class="welcome-caduceus">☤</span>
+            </div>
+            <h2 class="welcome-title">Hermes Agent Web UI</h2>
+            <p class="welcome-desc">启动完整的 Web 管理界面</p>
+            <div class="launch-status" v-if="launchState === 'launching'">
+              <div class="launch-spinner"></div>
+              <p>正在启动 Hermes Dashboard...</p>
+            </div>
+            <div class="launch-status" v-else-if="launchState === 'started'">
+              <div class="launch-success-icon">✓</div>
+              <p class="launch-url">Dashboard 已在 <a :href="dashboardUrl" target="_blank">{{ dashboardUrl }}</a> 启动</p>
+              <p class="launch-hint">浏览器已自动打开，你也可以点击上面链接</p>
+              <button class="btn btn-primary launch-btn" @click="openDashboardUrl">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
+                  <polyline points="16 3 21 3 21 8"/>
+                  <line x1="4" y1="20" x2="21" y2="3"/>
+                </svg>
+                在浏览器中打开
+              </button>
+            </div>
+            <div class="launch-status" v-else-if="launchState === 'error'">
+              <div class="launch-error-icon">!</div>
+              <p class="launch-error-msg">{{ launchError }}</p>
+              <button class="btn btn-primary launch-btn" @click="launchDashboard">重试</button>
+            </div>
+            <div v-else class="launch-actions">
+              <p class="launch-desc">Web UI 提供完整的 Hermes Agent 功能：对话管理、技能配置、环境变量、定时任务等</p>
+              <button class="btn btn-primary launch-btn" @click="launchDashboard" :disabled="!envReady">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
+                  <polyline points="16 3 21 3 21 8"/>
+                  <line x1="4" y1="20" x2="21" y2="3"/>
+                </svg>
+                启动 Web UI
+              </button>
+              <p v-if="!envReady" class="launch-hint" style="color: var(--error);">运行环境未就绪，请先在设置中检查</p>
+            </div>
           </div>
         </div>
       </div>
@@ -507,8 +581,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
 // ============ State ============
-type View = 'chat' | 'settings'
+type View = 'chat' | 'settings' | 'dashboard-launch'
 const currentView = ref<View>('chat')
+
+// Dashboard
+const launchState = ref<'idle' | 'launching' | 'started' | 'error'>('idle')
+const dashboardUrl = ref('http://127.0.0.1:9119')
+const launchError = ref('')
 
 // License
 const machineCode = ref('')
@@ -801,6 +880,34 @@ function smartScrollToBottom() {
   if (isNearBottom) {
     el.scrollTop = el.scrollHeight
   }
+}
+
+// ============ Dashboard ============
+async function launchDashboard() {
+  launchState.value = 'launching'
+  launchError.value = ''
+  currentView.value = 'dashboard-launch'
+  try {
+    const result: any = await invoke('launch_dashboard')
+    if (result.success) {
+      dashboardUrl.value = result.url
+      launchState.value = 'started'
+    } else {
+      throw new Error(result.message || '启动失败')
+    }
+  } catch (e: any) {
+    launchState.value = 'error'
+    launchError.value = e.toString()
+  }
+}
+
+function openDashboardUrl() {
+  // 在 Tauri 中打开外部浏览器
+  import('@tauri-apps/plugin-opener').then(({ openUrl }) => {
+    openUrl(dashboardUrl.value)
+  }).catch(() => {
+    window.open(dashboardUrl.value, '_blank')
+  })
 }
 
 // ============ Settings ============
@@ -2193,5 +2300,94 @@ html, body {
   border-radius: 50%;
   background: currentColor;
   flex-shrink: 0;
+}
+
+/* ============ Dashboard Launch ============ */
+.launch-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.launch-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid var(--border);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.launch-success-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--success-bg);
+  border: 2px solid var(--success);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: var(--success);
+}
+
+.launch-error-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--error-bg);
+  border: 2px solid var(--error);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  color: var(--error);
+}
+
+.launch-url {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--gold);
+}
+
+.launch-url a {
+  color: var(--gold);
+  text-decoration: underline;
+}
+
+.launch-error-msg {
+  color: var(--error);
+  font-size: 13px;
+  max-width: 400px;
+  text-align: center;
+  word-break: break-all;
+}
+
+.launch-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.launch-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.launch-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+  max-width: 400px;
+  line-height: 1.6;
+}
+
+.launch-btn {
+  font-size: 15px;
+  padding: 12px 32px;
 }
 </style>
