@@ -1692,6 +1692,40 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
                         PathBuf::from("npm")
                     }
                 });
+            // Windows 上 prebuild 脚本使用 rm/cp 等 Unix 命令会失败，需要修复
+            #[cfg(target_os = "windows")]
+            {
+                // 1. 手动执行 sync-assets（Windows 上 prebuild 的 rm -rf 无法运行）
+                let mut sync_cmd = std::process::Command::new("powershell");
+                sync_cmd
+                    .args([
+                        "-NoProfile",
+                        "-Command",
+                        "$f='node_modules/@nous-research/ui/dist/fonts'; \
+                         $a='node_modules/@nous-research/ui/dist/assets'; \
+                         Remove-Item -Recurse -Force public/fonts,public/ds-assets -ErrorAction SilentlyContinue; \
+                         if(Test-Path $f){ \
+                           New-Item -ItemType Directory -Force public/fonts|Out-Null; \
+                           Get-ChildItem $f|Copy-Item -Destination public/fonts -Recurse -Force \
+                         }; \
+                         if(Test-Path $a){ \
+                           New-Item -ItemType Directory -Force public/ds-assets|Out-Null; \
+                           Get-ChildItem $a|Copy-Item -Destination public/ds-assets -Recurse -Force \
+                         }",
+                    ])
+                    .current_dir(&web_src);
+                sync_cmd.creation_flags(0x08000000);
+                sync_cmd.output().ok();
+                // 2. 移除 prebuild 脚本（rm -rf 在 Windows cmd 中不存在）
+                let pkg_path = web_src.join("package.json");
+                if let Ok(content) = std::fs::read_to_string(&pkg_path) {
+                    let patched = content.replace("\"prebuild\": \"npm run sync-assets\",\n", "");
+                    if patched != content {
+                        let _ = std::fs::write(&pkg_path, patched);
+                    }
+                }
+            }
+
             let mut build = std::process::Command::new(&npm);
             build.args(["run", "build"]).current_dir(&web_src);
             // 使用本地捆绑 Node.js 时自动设置 PATH
@@ -1706,8 +1740,8 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
             let output = build.output().map_err(|e| format!("构建 Web UI 失败: {}", e))?;
             if !output.status.success() {
                 return Err(format!(
-                    "构建 Web UI 失败，请安装 Node.js (nodejs.org)\n  {}",
-                    decode_output(&output.stderr).lines().next().unwrap_or("")
+                    "构建 Web UI 失败: {}",
+                    decode_output(&output.stderr)
                 ));
             }
             // 构建输出在 hermes_cli/web_dist/，软链接到 web_dist/
