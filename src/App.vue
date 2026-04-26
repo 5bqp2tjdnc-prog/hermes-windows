@@ -664,12 +664,11 @@ let loadingTimer: ReturnType<typeof setInterval> | null = null
 
 function startLoadingTimer() {
   const stages = [
-    { time: 0, text: '正在启动 Python 环境...' },
-    { time: 3, text: '正在加载 Hermes Agent...' },
-    { time: 8, text: '正在连接 AI 服务...' },
-    { time: 15, text: '正在思考...' },
-    { time: 25, text: '正在查询相关信息...' },
-    { time: 40, text: '任务仍在进行中，请耐心等待...' },
+    { time: 0, text: '正在连接 AI 服务...' },
+    { time: 3, text: '正在思考...' },
+    { time: 8, text: '……' },
+    { time: 15, text: '处理较长，请稍候...' },
+    { time: 25, text: '仍在处理中，请耐心等待...' },
   ]
   loadingStatus.value = stages[0].text
   let nextIdx = 1
@@ -682,10 +681,9 @@ function startLoadingTimer() {
     if (nextIdx >= stages.length) {
       // 超过40秒后，每10秒换一个说法
       const extras = [
-        '还在处理中，请稍候...',
-        'AI 正在努力思考...',
-        '处理较慢，建议简化问题',
-        '仍在运行，请耐心等待...',
+        '还在处理中...',
+        'AI 正在思考...',
+        '仍在处理，请耐心等待...',
       ]
       const extraIdx = Math.min(Math.floor((elapsed - 40) / 10), extras.length - 1)
       loadingStatus.value = extras[extraIdx]
@@ -731,9 +729,8 @@ async function sendMessage() {
   }
 
   try {
-    const result: { response: string; session_id: string } = await invoke('chat_stream', {
+    const result: { response: string; session_id: string } = await invoke('chat_direct', {
       prompt: userMsg,
-      sessionId: sessionId.value,
     })
     messages.value.push({ role: 'assistant', content: result.response })
     if (result.session_id) {

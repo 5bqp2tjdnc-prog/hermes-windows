@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use tauri::Manager;
+use futures_util::StreamExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -90,10 +91,17 @@ const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
 // 内置 MiniMax API Key（发布前确认额度充足）
 const BUILTIN_API_KEY: &str = "sk-cp-_2yFksEQQQrzpyKNpNsPD7fiPiKbsOXJDLTfOwQdWDLZQro_iuG_UUFbrQOn9-g_WJPQtpf-MCx02bv89LYyhy6pI40TjrelWji--aLVNTN6fePCY64Udi0"; // MiniMax-M2.7-highspeed
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApiMessage {
+    pub role: String,
+    pub content: String,
+}
+
 // ============ State ============
 
 pub struct AppState {
     pub hermes_ready: Mutex<bool>,
+    pub chat_history: Mutex<Vec<ApiMessage>>,
 }
 
 // ============ Helpers ============
@@ -827,6 +835,123 @@ async fn chat_stream(prompt: String, session_id: String, app_handle: tauri::AppH
     Ok(ChatResult { response, session_id: new_session })
 }
 
+// ============ 直接 API 调用（跳过 Hermes Agent，速度最快） ============
+
+/// 直接用 MiniMax 的 Anthropic 兼容 API，不经过 Hermes Agent
+#[tauri::command]
+async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<ChatResult, String> {
+    // 验证许可证
+    let license_path = get_data_dir()?.join(LICENSE_FILE);
+    let saved_key = if license_path.exists() {
+        std::fs::read_to_string(&license_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if saved_key.is_empty() {
+        return Err("软件未激活，请先激活许可证".to_string());
+    }
+
+    let config = AppConfig::load()?;
+    let api_key = config.effective_api_key();
+    if api_key.is_empty() {
+        return Err("请先在设置中配置 API Key，或联系作者获取内置 Key".to_string());
+    }
+
+    // 获取对话历史
+    let history = app_handle.state::<AppState>().chat_history.lock().unwrap().clone();
+
+    // 构建消息列表（含历史）
+    let mut messages = history;
+    messages.push(ApiMessage {
+        role: "user".to_string(),
+        content: prompt.clone(),
+    });
+
+    // 清理 API base 路径
+    let base = config.api_base.trim_end_matches('/');
+    let url = format!("{}/messages", base);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP 客户端错误: {}", e))?;
+
+    let request_body = serde_json::json!({
+        "model": config.model,
+        "max_tokens": 4096,
+        "messages": messages,
+    });
+
+    let response = client
+        .post(&url)
+        .header("x-api-key", &api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("API 请求失败: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = response.text().await.unwrap_or_default();
+        return Err(format!("API 错误 ({}): {}", status, err_text));
+    }
+
+    // 解析响应体
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("解析 API 响应失败: {}", e))?;
+
+    // Anthropic 格式: body["content"][0]["text"]
+    let text = body["content"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|block| block["text"].as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if text.is_empty() {
+        return Err("API 返回空响应".to_string());
+    }
+
+    // 逐字符发射到前端（模拟流式效果）
+    let mut emitted = String::new();
+    for ch in text.chars() {
+        emitted.push(ch);
+        // 按句或按行发射
+        if ch == '\n' || ch == '。' || ch == '！' || ch == '？' || emitted.len() >= 50 {
+            let _ = app_handle.emit("chat-stream-line", &emitted);
+            emitted.clear();
+        }
+    }
+    if !emitted.is_empty() {
+        let _ = app_handle.emit("chat-stream-line", &emitted);
+    }
+
+    // 更新对话历史
+    let mut history = app_handle.state::<AppState>().chat_history.lock().unwrap();
+    history.push(ApiMessage {
+        role: "user".to_string(),
+        content: prompt,
+    });
+    history.push(ApiMessage {
+        role: "assistant".to_string(),
+        content: text.clone(),
+    });
+    // 只保留最近 20 轮对话
+    while history.len() > 40 {
+        history.remove(0);
+    }
+    drop(history);
+
+    Ok(ChatResult {
+        response: text,
+        session_id: String::new(),
+    })
+}
+
 // ============ License Server HTTP Client ============
 
 async fn verify_with_server(machine_code: &str) -> Result<LicenseInfo, String> {
@@ -1278,6 +1403,7 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState {
             hermes_ready: Mutex::new(false),
+            chat_history: Mutex::new(Vec::new()),
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -1289,6 +1415,7 @@ fn main() {
             generate_activation_code,
             chat_completion,
             chat_stream,
+            chat_direct,
             save_api_config,
             get_api_config,
             save_feishu_config,
