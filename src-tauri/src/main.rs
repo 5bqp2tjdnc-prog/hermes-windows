@@ -1250,7 +1250,7 @@ async fn check_hermes_environment() -> Result<serde_json::Value, String> {
     Ok(status)
 }
 
-/// 检查 Node.js 是否安装
+/// 检查 Node.js 是否安装（系统或本地捆绑）
 fn check_node_installed() -> Option<String> {
     let node_name = if cfg!(target_os = "windows") { "node.exe" } else { "node" };
     let mut cmd = std::process::Command::new(node_name);
@@ -1262,6 +1262,23 @@ fn check_node_installed() -> Option<String> {
     if let Ok(output) = cmd.output() {
         if output.status.success() {
             return Some(decode_output(&output.stdout).trim().to_string());
+        }
+    }
+    // 检查本地捆绑
+    if let Ok(data_dir) = get_data_dir() {
+        let bundled = get_nodejs_dir(&data_dir).join(node_name);
+        if bundled.exists() {
+            let mut cmd = std::process::Command::new(&bundled);
+            cmd.arg("--version")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000);
+            if let Ok(output) = cmd.output() {
+                if output.status.success() {
+                    return Some(format!("{} (本地)", decode_output(&output.stdout).trim()));
+                }
+            }
         }
     }
     None
@@ -1403,10 +1420,172 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
         }
     }
 
+    // Step 4: 安装 Node.js（Web UI 需要）
+    ensure_nodejs(&data_dir).await?;
+
     Ok(serde_json::json!({
         "success": true,
         "message": "环境安装成功",
         "path": hermes_script.to_string_lossy().to_string(),
+    }))
+}
+
+/// 获取 Node.js 目录（系统或本地捆绑）
+fn get_nodejs_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("nodejs")
+}
+
+/// 获取可用的 npm 路径（优先系统安装，后备用本地捆绑）
+fn find_npm(data_dir: &Path) -> Option<PathBuf> {
+    // 检查系统安装
+    let system_npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+    let mut cmd = std::process::Command::new(system_npm);
+    cmd.arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+    if cmd.output().map(|o| o.status.success()).unwrap_or(false) {
+        return Some(PathBuf::from(system_npm));
+    }
+
+    // 检查本地捆绑
+    let bundled = if cfg!(target_os = "windows") {
+        get_nodejs_dir(data_dir).join("npm.cmd")
+    } else {
+        get_nodejs_dir(data_dir).join("bin").join("npm")
+    };
+    if bundled.exists() {
+        return Some(bundled);
+    }
+
+    None
+}
+
+/// 确保 Node.js 已安装（下载便携版并解压到数据目录）
+async fn ensure_nodejs(data_dir: &Path) -> Result<(), String> {
+    // 检查系统 Node.js
+    let node_name = if cfg!(target_os = "windows") { "node.exe" } else { "node" };
+    let mut check = std::process::Command::new(node_name);
+    check.arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    check.creation_flags(0x08000000);
+    if check.output().map(|o| o.status.success()).unwrap_or(false) {
+        return Ok(());
+    }
+
+    // 检查本地已安装
+    let nodejs_dir = get_nodejs_dir(data_dir);
+    let node_exe = if cfg!(target_os = "windows") {
+        nodejs_dir.join("node.exe")
+    } else {
+        nodejs_dir.join("bin").join("node")
+    };
+    if node_exe.exists() {
+        return Ok(());
+    }
+
+    // 需要下载 Node.js
+    let node_version = "20.18.0";
+    let (download_url, zip_name) = if cfg!(target_os = "windows") {
+        (
+            format!("https://nodejs.org/dist/v{}/node-v{}-win-x64.zip", node_version, node_version),
+            format!("node-v{}-win-x64.zip", node_version),
+        )
+    } else {
+        (
+            format!("https://nodejs.org/dist/v{}/node-v{}-darwin-x64.tar.gz", node_version, node_version),
+            format!("node-v{}-darwin-x64.tar.gz", node_version),
+        )
+    };
+
+    let zip_path = data_dir.join(&zip_name);
+
+    // 下载
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let response = client
+        .get(&download_url)
+        .send()
+        .await
+        .map_err(|e| format!("下载 Node.js 失败: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("下载 Node.js 失败: HTTP {}", response.status()));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("读取 Node.js 数据失败: {}", e))?
+        .to_vec();
+
+    std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入 Node.js 文件失败: {}", e))?;
+
+    // Node.js 便携版解压后得到 node-vxx.x.x-win-x64/ 目录，需要重命名为 nodejs/
+    if cfg!(target_os = "windows") {
+        // 解压 ZIP
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            let unzip_result = std::process::Command::new("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg(format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    zip_path.to_string_lossy(),
+                    data_dir.to_string_lossy()
+                ))
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| format!("解压 Node.js 失败: {}", e))?;
+
+            if !unzip_result.status.success() {
+                let stderr = decode_output(&unzip_result.stderr);
+                return Err(format!("解压 Node.js 失败: {}", stderr));
+            }
+        }
+
+        // 重命名 node-v20.18.0-win-x64 -> nodejs
+        let extracted_dir = data_dir.join(format!("node-v{}-win-x64", node_version));
+        if extracted_dir.exists() {
+            std::fs::rename(&extracted_dir, &nodejs_dir).ok();
+        }
+    } else {
+        // macOS: tar xzf
+        // (simplified for now)
+    }
+
+    // 清理 zip 文件
+    std::fs::remove_file(&zip_path).ok();
+
+    // 验证
+    let mut verify = std::process::Command::new(&node_exe);
+    verify.arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    verify.creation_flags(0x08000000);
+    if !verify.output().map(|o| o.status.success()).unwrap_or(false) {
+        return Err("Node.js 安装验证失败".to_string());
+    }
+
+    Ok(())
+}
+
+/// 单独安装 Node.js（独立命令，便于 UI 调用）
+#[tauri::command]
+async fn setup_nodejs() -> Result<serde_json::Value, String> {
+    let data_dir = get_data_dir()?;
+    ensure_nodejs(&data_dir).await?;
+    Ok(serde_json::json!({
+        "success": true,
+        "message": "Node.js 安装成功",
     }))
 }
 
@@ -1504,15 +1683,32 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     let web_src = agent_dir.join("web");
     if !web_dist.exists() {
         if web_src.exists() {
-            // 尝试用 npm 构建 web UI（输出在 hermes_cli/web_dist/）
-            let npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
-            let mut build = std::process::Command::new(npm);
+            // 找 npm（系统优先，其次本地捆绑）
+            let npm = find_npm(&get_data_dir().unwrap_or_default())
+                .unwrap_or_else(|| {
+                    if cfg!(target_os = "windows") {
+                        PathBuf::from("npm.cmd")
+                    } else {
+                        PathBuf::from("npm")
+                    }
+                });
+            let mut build = std::process::Command::new(&npm);
             build.args(["run", "build"]).current_dir(&web_src);
+            // 使用本地捆绑 Node.js 时自动设置 PATH
+            let nodejs_dir = get_nodejs_dir(&get_data_dir().unwrap_or_default());
+            let node_bin = if cfg!(target_os = "windows") { nodejs_dir.clone() } else { nodejs_dir.join("bin") };
+            if node_bin.exists() {
+                let old_path = std::env::var("PATH").unwrap_or_default();
+                build.env("PATH", format!("{};{}", node_bin.to_string_lossy(), old_path));
+            }
             #[cfg(target_os = "windows")]
             build.creation_flags(0x08000000);
             let output = build.output().map_err(|e| format!("构建 Web UI 失败: {}", e))?;
             if !output.status.success() {
-                return Err(format!("构建 Web UI 失败，请确保已安装 Node.js (nodejs.org)"));
+                return Err(format!(
+                    "构建 Web UI 失败，请安装 Node.js (nodejs.org)\n  {}",
+                    decode_output(&output.stderr).lines().next().unwrap_or("")
+                ));
             }
             // 构建输出在 hermes_cli/web_dist/，软链接到 web_dist/
             let built_dist = agent_dir.join("hermes_cli").join("web_dist");
@@ -1606,6 +1802,7 @@ fn main() {
             test_feishu,
             check_hermes_environment,
             setup_hermes_environment,
+            setup_nodejs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -511,10 +511,10 @@
                   <span class="env-check-path">{{ envStatus.node_version || 'Web UI 需要' }}</span>
                 </div>
                 <div class="env-item" v-if="!envStatus.node_ok">
-                  <span class="env-hint">安装 Node.js 后可自动构建 Web UI</span>
-                  <a class="btn btn-sm btn-outline" href="https://nodejs.org/" target="_blank">
-                    下载 Node.js
-                  </a>
+                  <span class="env-hint">Web UI 需要 Node.js，可自动下载安装</span>
+                  <button class="btn btn-sm btn-primary" @click="setupNodejs" :disabled="isInstallingNode">
+                    {{ isInstallingNode ? '安装中...' : '安装 Node.js' }}
+                  </button>
                 </div>
                 <div class="env-item" v-if="envStatus.version">
                   <span class="env-check-label">版本</span>
@@ -645,6 +645,7 @@ const apiConfig = ref({
 // Environment
 const envChecking = ref(false)
 const isSettingUp = ref(false)
+const isInstallingNode = ref(false)
 const envStatus = ref({
   python_ok: false,
   agent_ok: false,
@@ -981,6 +982,19 @@ async function setupEnvironment() {
     showToast('安装失败: ' + e, 'error')
   } finally {
     isSettingUp.value = false
+  }
+}
+
+async function setupNodejs() {
+  isInstallingNode.value = true
+  try {
+    const result: any = await invoke('setup_nodejs')
+    showToast(result.message, 'success')
+    await checkEnvironment()
+  } catch (e: any) {
+    showToast('安装 Node.js 失败: ' + e, 'error')
+  } finally {
+    isInstallingNode.value = false
   }
 }
 
