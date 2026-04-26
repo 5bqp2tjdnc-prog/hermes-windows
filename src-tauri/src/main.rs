@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use tauri::Emitter;
 use tauri::Manager;
 use futures_util::StreamExt;
 #[cfg(target_os = "windows")]
