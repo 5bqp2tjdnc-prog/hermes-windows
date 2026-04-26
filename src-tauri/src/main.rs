@@ -127,6 +127,45 @@ fn silent_cmd(program: &str) -> std::process::Command {
     cmd
 }
 
+/// 过滤模型的思考过程，只保留最终回答
+/// MiniMax M2.7 在 <think>...</think> 标签中输出思考过程
+fn strip_thinking(text: &str) -> String {
+    let mut result = String::new();
+    let mut in_think = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<think>") {
+            in_think = true;
+            // 如果 <think> 后还有其他内容在同一行，保留
+            let after = trimmed.trim_start_matches("<think>").trim();
+            if !after.is_empty() && !after.starts_with("<think>") && !after.starts_with("</think>") {
+                result.push_str(line);
+                result.push('\n');
+            }
+            continue;
+        }
+        if trimmed.contains("</think>") {
+            in_think = false;
+            // 如果 </think> 后还有其他内容，保留
+            let after = trimmed.split("</think>").nth(1).unwrap_or("").trim();
+            if !after.is_empty() {
+                result.push_str(after);
+                result.push('\n');
+            }
+            continue;
+        }
+        if in_think {
+            continue;
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    let result = result.trim().to_string();
+    if result.is_empty() { text.to_string() } else { result }
+}
+
 /// 持久化 Python 路径，下次启动 APP 免去注册表查询
 fn save_python_path(path: &Path) {
     if let Ok(data_dir) = get_data_dir() {
@@ -888,6 +927,7 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
         "model": model,
         "max_tokens": 4096,
         "messages": messages,
+        "enable_search": true,
     });
 
     let response = client
@@ -912,18 +952,21 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
         .map_err(|e| format!("解析 API 响应失败: {}", e))?;
 
     // OpenAI 格式: body["choices"][0]["message"]["content"]
-    let text = body["choices"]
+    let raw_text = body["choices"]
         .as_array()
         .and_then(|arr| arr.first())
         .and_then(|choice| choice["message"]["content"].as_str())
         .unwrap_or("")
         .to_string();
 
-    if text.is_empty() {
+    if raw_text.is_empty() {
         return Err("API 返回空响应".to_string());
     }
 
-    // 逐字符发射到前端（模拟流式效果）
+    // 分离 thinking 和最终回答，过滤掉思考过程
+    let text = strip_thinking(&raw_text);
+
+    // 只发射最终回答到流式输出（不含思考过程）
     let mut emitted = String::new();
     for ch in text.chars() {
         emitted.push(ch);

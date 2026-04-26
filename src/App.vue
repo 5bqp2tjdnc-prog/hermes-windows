@@ -736,10 +736,8 @@ async function sendMessage() {
     if (result.session_id) {
       sessionId.value = result.session_id
     }
-    nextTick(() => scrollToBottomWithRetry())
   } catch (e: any) {
     messages.value.push({ role: 'assistant', content: '', error: e.toString() })
-    nextTick(() => scrollToBottomWithRetry())
   } finally {
     isLoading.value = false
     isStreaming.value = false
@@ -749,6 +747,11 @@ async function sendMessage() {
       unlistenStreamFn()
       unlistenStreamFn = null
     }
+    // 滚动到底 + 聚焦输入框
+    nextTick(() => {
+      scrollToBottomWithRetry()
+      inputRef.value?.focus()
+    })
   }
 }
 
