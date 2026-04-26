@@ -117,6 +117,38 @@ fn silent_cmd(program: &str) -> std::process::Command {
     cmd
 }
 
+/// 持久化 Python 路径，下次启动 APP 免去注册表查询
+fn save_python_path(path: &Path) {
+    if let Ok(data_dir) = get_data_dir() {
+        let _ = std::fs::write(data_dir.join(".python_path"), path.to_string_lossy().as_ref());
+    }
+}
+
+/// 读取持久化的 Python 路径缓存
+fn load_cached_python_path() -> Option<PathBuf> {
+    let data_dir = get_data_dir().ok()?;
+    let cache_file = data_dir.join(".python_path");
+    if !cache_file.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(cache_file).ok()?;
+    let path = PathBuf::from(content.trim());
+    if path.exists() {
+        Some(path)
+    } else {
+        // 缓存的路径已不存在，清理
+        let _ = std::fs::remove_file(data_dir.join(".python_path"));
+        None
+    }
+}
+
+/// 找到 Python 路径后统一处理：持久化 + 内存缓存 + 返回
+fn report_python(path: PathBuf) -> Result<PathBuf, String> {
+    save_python_path(&path);
+    *get_python_cache().lock().unwrap() = Some(path.clone());
+    Ok(path)
+}
+
 fn get_machine_id() -> Result<String, String> {
     let uid = machine_uid::get().map_err(|e| format!("获取机器码失败: {}", e))?;
     let mut hasher = Sha256::new();
@@ -232,11 +264,17 @@ fn new_python_cmd(python: &Path) -> std::process::Command {
 }
 
 fn find_hermes_python() -> Result<PathBuf, String> {
-    // 先检查缓存
+    // 先检查进程级缓存
     if let Some(cached) = get_python_cache().lock().unwrap().as_ref() {
         if cached.exists() {
             return Ok(cached.clone());
         }
+    }
+
+    // 再检查持久化缓存（免去注册表查询，跨会话）
+    if let Some(persisted) = load_cached_python_path() {
+        *get_python_cache().lock().unwrap() = Some(persisted.clone());
+        return Ok(persisted);
     }
 
     let exe_dir = std::env::current_exe()
@@ -247,16 +285,14 @@ fn find_hermes_python() -> Result<PathBuf, String> {
     // 1. 和 exe 同目录的 python/python.exe
     let bundled = exe_dir.join("python").join("python.exe");
     if bundled.exists() {
-        *get_python_cache().lock().unwrap() = Some(bundled.clone());
-        return Ok(bundled);
+        return report_python(bundled);
     }
 
     // 2. 环境变量 HERMES_PYTHON
     if let Ok(env_py) = std::env::var("HERMES_PYTHON") {
         let p = PathBuf::from(env_py);
         if p.exists() {
-            *get_python_cache().lock().unwrap() = Some(p.clone());
-            return Ok(p);
+            return report_python(p);
         }
     }
 
@@ -291,8 +327,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
                             if !dir.is_empty() {
                                 let py_exe = PathBuf::from(dir).join("python.exe");
                                 if py_exe.exists() && python_works(&py_exe) {
-                                    *get_python_cache().lock().unwrap() = Some(py_exe.clone());
-                                    return Ok(py_exe);
+                                    return report_python(py_exe);
                                 }
                             }
                         }
@@ -313,8 +348,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
                             if !dir.is_empty() {
                                 let py_exe = PathBuf::from(dir).join("python.exe");
                                 if py_exe.exists() && python_works(&py_exe) {
-                                    *get_python_cache().lock().unwrap() = Some(py_exe.clone());
-                                    return Ok(py_exe);
+                                    return report_python(py_exe);
                                 }
                             }
                         }
@@ -337,8 +371,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
         for p in &program_paths {
             let pb = PathBuf::from(p);
             if pb.exists() && python_works(&pb) {
-                *get_python_cache().lock().unwrap() = Some(pb.clone());
-                return Ok(pb);
+                return report_python(pb);
             }
         }
 
@@ -350,8 +383,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
                     for entry in entries.flatten() {
                         let python_exe = entry.path().join("python.exe");
                         if python_exe.exists() && python_works(&python_exe) {
-                            *get_python_cache().lock().unwrap() = Some(python_exe.clone());
-                            return Ok(python_exe);
+                            return report_python(python_exe);
                         }
                     }
                 }
@@ -363,8 +395,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
             for conda_dir in &["anaconda3", "miniconda3", "Anaconda3", "Miniconda3"] {
                 let pb = PathBuf::from(&user_profile).join(conda_dir).join("python.exe");
                 if pb.exists() && python_works(&pb) {
-                    *get_python_cache().lock().unwrap() = Some(pb.clone());
-                    return Ok(pb);
+                    return report_python(pb);
                 }
             }
         }
@@ -386,8 +417,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
                         }
                         let pb = PathBuf::from(&path);
                         if pb.exists() && python_works(&pb) {
-                            *get_python_cache().lock().unwrap() = Some(pb.clone());
-                            return Ok(pb);
+                            return report_python(pb);
                         }
                     }
                 }
@@ -407,8 +437,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
                     if !real_path.is_empty() {
                         let pb = PathBuf::from(&real_path);
                         if pb.exists() {
-                            *get_python_cache().lock().unwrap() = Some(pb.clone());
-                            return Ok(pb);
+                            return report_python(pb);
                         }
                     }
                 }
