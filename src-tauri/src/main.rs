@@ -1671,6 +1671,18 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
     Ok(())
 }
 
+/// 为命令设置本地 Node.js PATH（如有捆绑版）
+fn setup_node_path(cmd: &mut std::process::Command) {
+    if let Ok(data_dir) = get_data_dir() {
+        let nodejs_dir = get_nodejs_dir(&data_dir);
+        let node_bin = if cfg!(target_os = "windows") { nodejs_dir } else { nodejs_dir.join("bin") };
+        if node_bin.exists() {
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{};{}", node_bin.to_string_lossy(), old_path));
+        }
+    }
+}
+
 /// 启动 Hermes Agent Dashboard 并在浏览器中打开
 #[tauri::command]
 async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
@@ -1692,6 +1704,20 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
                         PathBuf::from("npm")
                     }
                 });
+            // 先安装依赖（如果 node_modules 不存在）
+            let has_modules = web_src.join("node_modules").exists();
+            if !has_modules {
+                let mut install = std::process::Command::new(&npm);
+                install.args(["ci", "--prefer-offline"]).current_dir(&web_src);
+                setup_node_path(&mut install);
+                #[cfg(target_os = "windows")]
+                install.creation_flags(0x08000000);
+                let install_out = install.output().map_err(|e| format!("npm install 失败: {}", e))?;
+                if !install_out.status.success() {
+                    return Err(format!("npm 安装依赖失败: {}", decode_output(&install_out.stderr)));
+                }
+            }
+
             // Windows 上 prebuild 脚本使用 rm/cp 等 Unix 命令会失败，需要修复
             #[cfg(target_os = "windows")]
             {
@@ -1728,13 +1754,7 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
 
             let mut build = std::process::Command::new(&npm);
             build.args(["run", "build"]).current_dir(&web_src);
-            // 使用本地捆绑 Node.js 时自动设置 PATH
-            let nodejs_dir = get_nodejs_dir(&get_data_dir().unwrap_or_default());
-            let node_bin = if cfg!(target_os = "windows") { nodejs_dir.clone() } else { nodejs_dir.join("bin") };
-            if node_bin.exists() {
-                let old_path = std::env::var("PATH").unwrap_or_default();
-                build.env("PATH", format!("{};{}", node_bin.to_string_lossy(), old_path));
-            }
+            setup_node_path(&mut build);
             #[cfg(target_os = "windows")]
             build.creation_flags(0x08000000);
             let output = build.output().map_err(|e| format!("构建 Web UI 失败: {}", e))?;
