@@ -1221,9 +1221,14 @@ async fn check_hermes_environment() -> Result<serde_json::Value, String> {
     let python_ok = python.is_ok();
     let agent_ok = agent.is_ok();
 
+    // 检查 Node.js 是否可用（Web UI 需要）
+    let node_version = check_node_installed();
+
     let mut status = serde_json::json!({
         "python_ok": python_ok,
         "agent_ok": agent_ok,
+        "node_ok": node_version.is_some(),
+        "node_version": node_version.unwrap_or_default(),
         "python_path": python.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "agent_path": agent.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "ready": python_ok && agent_ok,
@@ -1243,6 +1248,23 @@ async fn check_hermes_environment() -> Result<serde_json::Value, String> {
     }
 
     Ok(status)
+}
+
+/// 检查 Node.js 是否安装
+fn check_node_installed() -> Option<String> {
+    let node_name = if cfg!(target_os = "windows") { "node.exe" } else { "node" };
+    let mut cmd = std::process::Command::new(node_name);
+    cmd.arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+    if let Ok(output) = cmd.output() {
+        if output.status.success() {
+            return Some(decode_output(&output.stdout).trim().to_string());
+        }
+    }
+    None
 }
 
 // ============ Environment Setup ============
@@ -1451,6 +1473,25 @@ async fn send_feishu_message(token: &str, chat_id: &str, content: &str) -> Resul
 
 // ============ Dashboard Launch ============
 
+/// 递归复制目录（备用方案，软链接失败时使用）
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// 启动 Hermes Agent Dashboard 并在浏览器中打开
 #[tauri::command]
 async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
@@ -1461,21 +1502,37 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     // 检查 web_dist 是否存在，构建 web UI 前端
     let web_dist = agent_dir.join("web_dist");
     let web_src = agent_dir.join("web");
-    if !web_dist.exists() && web_src.exists() {
-        // 尝试用 npm 构建 web UI
-        let npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
-        let mut build = std::process::Command::new(npm);
-        build.args(["run", "build"]).current_dir(&web_src);
-        #[cfg(target_os = "windows")]
-        build.creation_flags(0x08000000);
-        let output = build.output().map_err(|e| format!("构建 Web UI 失败: {}", e))?;
-        if !output.status.success() {
-            return Err(format!("构建 Web UI 失败，请确保已安装 Node.js"));
-        }
-    }
-
     if !web_dist.exists() {
-        return Err("Web UI 文件未找到，请运行环境安装".to_string());
+        if web_src.exists() {
+            // 尝试用 npm 构建 web UI（输出在 hermes_cli/web_dist/）
+            let npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+            let mut build = std::process::Command::new(npm);
+            build.args(["run", "build"]).current_dir(&web_src);
+            #[cfg(target_os = "windows")]
+            build.creation_flags(0x08000000);
+            let output = build.output().map_err(|e| format!("构建 Web UI 失败: {}", e))?;
+            if !output.status.success() {
+                return Err(format!("构建 Web UI 失败，请确保已安装 Node.js (nodejs.org)"));
+            }
+            // 构建输出在 hermes_cli/web_dist/，软链接到 web_dist/
+            let built_dist = agent_dir.join("hermes_cli").join("web_dist");
+            if built_dist.exists() {
+                #[cfg(not(target_os = "windows"))]
+                { std::os::unix::fs::symlink(&built_dist, &web_dist).ok(); }
+                #[cfg(target_os = "windows")]
+                { std::os::windows::fs::symlink_dir(&built_dist, &web_dist).ok(); }
+                // 如果软链接失败，直接复制
+                if !web_dist.exists() {
+                    copy_dir_recursive(&built_dist, &web_dist).ok();
+                }
+            }
+        }
+        if !web_dist.exists() {
+            return Err(
+                "Web UI 文件未找到。请确保运行环境安装完整，或安装 Node.js (nodejs.org) 后重试。"
+                    .to_string()
+            );
+        }
     }
 
     // 启动 Hermes Dashboard 进程（后台运行）

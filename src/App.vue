@@ -502,6 +502,20 @@
                   </span>
                   <span class="env-check-path">{{ envStatus.agent_path || '-' }}</span>
                 </div>
+                <div class="env-item">
+                  <span class="env-check-label">Node.js</span>
+                  <span class="env-check-status" :class="envStatus.node_ok ? 'ok' : 'fail'">
+                    <span class="check-dot"></span>
+                    {{ envStatus.node_ok ? '已安装' : '未安装' }}
+                  </span>
+                  <span class="env-check-path">{{ envStatus.node_version || 'Web UI 需要' }}</span>
+                </div>
+                <div class="env-item" v-if="!envStatus.node_ok">
+                  <span class="env-hint">安装 Node.js 后可自动构建 Web UI</span>
+                  <a class="btn btn-sm btn-outline" href="https://nodejs.org/" target="_blank">
+                    下载 Node.js
+                  </a>
+                </div>
                 <div class="env-item" v-if="envStatus.version">
                   <span class="env-check-label">版本</span>
                   <span class="env-check-status ok">{{ envStatus.version }}</span>
@@ -634,6 +648,8 @@ const isSettingUp = ref(false)
 const envStatus = ref({
   python_ok: false,
   agent_ok: false,
+  node_ok: false,
+  node_version: '',
   python_path: '',
   agent_path: '',
   version: '',
