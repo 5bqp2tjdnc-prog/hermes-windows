@@ -574,7 +574,7 @@ fn ensure_hermes_deps(python: &Path, agent_dir: &Path) -> Result<(), String> {
     // 检查核心 Python 依赖是否已安装（静默执行，不显示黑窗）
     let deps_ok = {
         let mut cmd = new_python_cmd(python);
-        cmd.arg("-c").arg("import yaml, prompt_toolkit, openai, rich")
+        cmd.arg("-c").arg("import yaml, prompt_toolkit, openai, rich, fastapi, uvicorn")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         #[cfg(target_os = "windows")]
@@ -613,6 +613,7 @@ fn ensure_hermes_deps(python: &Path, agent_dir: &Path) -> Result<(), String> {
         .arg("rich").arg("fire").arg("tenacity")
         .arg("pyyaml").arg("requests").arg("jinja2")
         .arg("pydantic").arg("prompt_toolkit").arg("python-dotenv")
+        .arg("fastapi").arg("uvicorn")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
@@ -1409,7 +1410,8 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
             .arg("openai").arg("anthropic").arg("httpx[socks]")
             .arg("rich").arg("fire").arg("tenacity")
             .arg("pyyaml").arg("requests").arg("jinja2")
-            .arg("pydantic").arg("prompt_toolkit").arg("python-dotenv");
+            .arg("pydantic").arg("prompt_toolkit").arg("python-dotenv")
+            .arg("fastapi").arg("uvicorn");
         #[cfg(target_os = "windows")]
         fallback.creation_flags(0x08000000);
         let fb_result = fallback.output()
@@ -1813,15 +1815,21 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
         // 检查进程是否仍然存活
         match child.try_wait() {
             Ok(Some(exit_status)) => {
-                let stderr_output = child.stderr.take();
-                let mut err_buf = String::new();
-                if let Some(mut stderr) = stderr_output {
-                    let _ = std::io::BufReader::new(&mut stderr).read_to_string(&mut err_buf);
+                let mut diag = String::new();
+                if let Some(mut sout) = child.stdout.take() {
+                    let mut buf = String::new();
+                    let _ = std::io::BufReader::new(&mut sout).read_to_string(&mut buf);
+                    if !buf.trim().is_empty() { diag += &format!("stdout: {}\n", buf.trim()); }
+                }
+                if let Some(mut serr) = child.stderr.take() {
+                    let mut buf = String::new();
+                    let _ = std::io::BufReader::new(&mut serr).read_to_string(&mut buf);
+                    if !buf.trim().is_empty() { diag += &format!("stderr: {}\n", buf.trim()); }
                 }
                 return Err(format!(
                     "Dashboard 进程异常退出 (code: {:?})\n{}",
                     exit_status.code(),
-                    err_buf.trim()
+                    diag.trim()
                 ));
             }
             Ok(None) => {} // 进程还在运行
