@@ -231,13 +231,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
                 .unwrap_or(false)
         }
 
-        // 3. py.exe (Python Launcher, C:\Windows\ 下) — 绕过 WindowsApps 执行别名
-        //    python.org 安装器默认安装这个启动器，它通过注册表查找真实 Python
-        if python_works(Path::new("py.exe")) {
-            return Ok(PathBuf::from("py.exe"));
-        }
-
-        // 4. Program Files 系统级安装
+        // 3. Program Files 系统级安装（真实 python.exe，CREATE_NO_WINDOW 有效）
         let program_paths = [
             "C:\\Program Files\\Python313\\python.exe",
             "C:\\Program Files\\Python312\\python.exe",
@@ -255,7 +249,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
             }
         }
 
-        // 5. 当前用户的 AppData Python 安装 (Python.org 安装器用户安装默认位置)
+        // 4. 当前用户的 AppData Python 安装 (Python.org 安装器用户安装默认位置)
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
             let py_base = PathBuf::from(local_app_data).join("Programs\\Python");
             if py_base.exists() {
@@ -270,7 +264,7 @@ fn find_hermes_python() -> Result<PathBuf, String> {
             }
         }
 
-        // 6. where.exe python.exe — 跳过 WindowsApps 存根，验证每个结果
+        // 5. where.exe python.exe — 跳过 WindowsApps 存根，验证每个结果
         if let Ok(output) = std::process::Command::new("where.exe")
             .arg("python.exe")
             .stdout(std::process::Stdio::piped())
@@ -289,6 +283,30 @@ fn find_hermes_python() -> Result<PathBuf, String> {
                     }
                 }
             }
+        }
+
+        // 6. py.exe (Python Launcher) — 最后备选
+        //    注意: py.exe 是启动器，它会创建子进程 python.exe，
+        //    CREATE_NO_WINDOW 对子进程无效，会弹出黑窗。
+        //    所以只在找不到真实 python.exe 时才使用它。
+        if python_works(Path::new("py.exe")) {
+            // 尝试解析为真实的 python.exe 路径（py.exe -c "import sys; print(sys.executable)"）
+            let mut resolve = std::process::Command::new("py.exe");
+            resolve.args(["-3", "-c", "import sys; print(sys.executable, end='')"]);
+            let resolve_out = resolve.output().ok();
+            if let Some(out) = resolve_out {
+                if out.status.success() {
+                    let real_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !real_path.is_empty() {
+                        let pb = PathBuf::from(&real_path);
+                        if pb.exists() {
+                            return Ok(pb);
+                        }
+                    }
+                }
+            }
+            // 无法解析，返回 py.exe 本身（会弹黑窗，但至少能工作）
+            return Ok(PathBuf::from("py.exe"));
         }
     }
 
@@ -838,50 +856,38 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     // Step 3: 安装 Python 依赖
     let python = find_hermes_python()?;
 
-    // 升级 pip
-    new_python_cmd(&python)
-        .arg("-m")
-        .arg("pip")
-        .arg("install")
-        .arg("--upgrade")
-        .arg("pip")
+    // 升级 pip（静默）
+    let mut pip_upgrade = new_python_cmd(&python);
+    pip_upgrade.arg("-m").arg("pip").arg("install").arg("--upgrade").arg("pip")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok();
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    pip_upgrade.creation_flags(0x08000000);
+    pip_upgrade.output().ok();
 
-    // 安装 Hermes Agent
-    let install = new_python_cmd(&python)
-        .arg("-m")
-        .arg("pip")
-        .arg("install")
-        .arg(extract_dir.to_string_lossy().to_string())
-        .output()
+    // 安装 Hermes Agent（静默）
+    let mut install = new_python_cmd(&python);
+    install.arg("-m").arg("pip").arg("install")
+        .arg(extract_dir.to_string_lossy().to_string());
+    #[cfg(target_os = "windows")]
+    install.creation_flags(0x08000000);
+    let install_result = install.output()
         .map_err(|e| format!("运行 pip install 失败: {}", e))?;
 
-    if !install.status.success() {
-        let stderr = String::from_utf8_lossy(&install.stderr);
-        // 尝试直接安装核心依赖
-        let fallback = new_python_cmd(&python)
-            .arg("-m")
-            .arg("pip")
-            .arg("install")
-            .arg("openai")
-            .arg("anthropic")
-            .arg("httpx[socks]")
-            .arg("rich")
-            .arg("fire")
-            .arg("tenacity")
-            .arg("pyyaml")
-            .arg("requests")
-            .arg("jinja2")
-            .arg("pydantic")
-            .arg("prompt_toolkit")
-            .arg("python-dotenv")
-            .output()
+    if !install_result.status.success() {
+        // 尝试直接安装核心依赖（静默）
+        let mut fallback = new_python_cmd(&python);
+        fallback.arg("-m").arg("pip").arg("install")
+            .arg("openai").arg("anthropic").arg("httpx[socks]")
+            .arg("rich").arg("fire").arg("tenacity")
+            .arg("pyyaml").arg("requests").arg("jinja2")
+            .arg("pydantic").arg("prompt_toolkit").arg("python-dotenv");
+        #[cfg(target_os = "windows")]
+        fallback.creation_flags(0x08000000);
+        let fb_result = fallback.output()
             .map_err(|e| format!("安装核心依赖失败: {}", e))?;
-        if !fallback.status.success() {
-            let fb_stderr = String::from_utf8_lossy(&fallback.stderr);
+        if !fb_result.status.success() {
+            let fb_stderr = String::from_utf8_lossy(&fb_result.stderr);
             return Err(format!("安装 Python 依赖失败: {}", fb_stderr));
         }
     }
