@@ -220,13 +220,15 @@ fn find_hermes_python() -> Result<PathBuf, String> {
 
     #[cfg(target_os = "windows")]
     {
-        // 辅助: 测试 Python 确实能启动 (验证 --version 成功)
+        // 辅助: 测试 Python 确实能启动 (验证 --version 成功，静默执行)
         fn python_works(path: &std::path::Path) -> bool {
-            std::process::Command::new(path)
-                .arg("--version")
+            let mut cmd = std::process::Command::new(path);
+            cmd.arg("--version")
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .output()
+                .stderr(std::process::Stdio::null());
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000);
+            cmd.output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
         }
@@ -264,22 +266,25 @@ fn find_hermes_python() -> Result<PathBuf, String> {
             }
         }
 
-        // 5. where.exe python.exe — 跳过 WindowsApps 存根，验证每个结果
-        if let Ok(output) = std::process::Command::new("where.exe")
-            .arg("python.exe")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
+        // 5. where.exe python.exe — 跳过 WindowsApps 存根，验证每个结果（静默）
         {
-            if output.status.success() {
-                for line in String::from_utf8_lossy(&output.stdout).lines() {
-                    let path = line.trim().to_string();
-                    if path.is_empty() || path.contains("WindowsApps") {
-                        continue;
-                    }
-                    let pb = PathBuf::from(&path);
-                    if pb.exists() && python_works(&pb) {
-                        return Ok(pb);
+            let mut where_cmd = std::process::Command::new("where.exe");
+            where_cmd.arg("python.exe")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            #[cfg(target_os = "windows")]
+            where_cmd.creation_flags(0x08000000);
+            if let Ok(output) = where_cmd.output() {
+                if output.status.success() {
+                    for line in String::from_utf8_lossy(&output.stdout).lines() {
+                        let path = line.trim().to_string();
+                        if path.is_empty() || path.contains("WindowsApps") {
+                            continue;
+                        }
+                        let pb = PathBuf::from(&path);
+                        if pb.exists() && python_works(&pb) {
+                            return Ok(pb);
+                        }
                     }
                 }
             }
@@ -290,11 +295,12 @@ fn find_hermes_python() -> Result<PathBuf, String> {
         //    CREATE_NO_WINDOW 对子进程无效，会弹出黑窗。
         //    所以只在找不到真实 python.exe 时才使用它。
         if python_works(Path::new("py.exe")) {
-            // 尝试解析为真实的 python.exe 路径（py.exe -c "import sys; print(sys.executable)"）
+            // 尝试解析为真实的 python.exe 路径（静默，但子进程仍可能闪一下）
             let mut resolve = std::process::Command::new("py.exe");
             resolve.args(["-3", "-c", "import sys; print(sys.executable, end='')"]);
-            let resolve_out = resolve.output().ok();
-            if let Some(out) = resolve_out {
+            #[cfg(target_os = "windows")]
+            resolve.creation_flags(0x08000000);
+            if let Ok(out) = resolve.output() {
                 if out.status.success() {
                     let real_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     if !real_path.is_empty() {
@@ -434,8 +440,10 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
     cmd.env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
         .env("HERMES_Q", prompt)
-        .env("PYTHONUTF8", "1");
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8");
     // 使用 -c 方式直接调用 cli.main()，完全规避 Windows 上无扩展名脚本执行问题
+    // 同时强制设置 stdout 编码为 utf-8，确保 GBK 系统下输出不乱码
     if let Some(agent_dir) = hermes.parent() {
         let agent_dir_escaped = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
         let resume_arg = if !session_id.is_empty() {
@@ -444,7 +452,7 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
             String::new()
         };
         let python_code = format!(
-            "import sys; sys.path.insert(0, '{}'); import os; from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=True{})",
+            "import sys,os; sys.stdout=__import__('io').TextIOWrapper(sys.stdout.buffer,encoding='utf-8',errors='replace'); sys.path.insert(0, '{}'); from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=True{})",
             agent_dir_escaped, resume_arg
         );
         cmd.env("PYTHONPATH", agent_dir.to_string_lossy().to_string());
