@@ -189,6 +189,12 @@
             <div class="msg-body">
               <div class="msg-name">Hermes</div>
               <div class="msg-content">
+                <!-- 流式输出日志（逐行思考过程） -->
+                <div class="streaming-log" v-if="streamingLines.length > 0">
+                  <div v-for="(line, i) in streamingLines" :key="i" class="stream-line">{{ line }}</div>
+                </div>
+                <!-- 启动阶段的状态提示 -->
+                <div v-else-if="loadingStatus" class="loading-status">{{ loadingStatus }}</div>
                 <div class="typing-indicator">
                   <span></span><span></span><span></span>
                 </div>
@@ -498,6 +504,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 
 // ============ State ============
 type View = 'chat' | 'settings'
@@ -521,6 +528,9 @@ const licenseInfo = ref({
 const messages = ref<Array<{ role: string; content: string; error?: string }>>([])
 const inputText = ref('')
 const isLoading = ref(false)
+const isStreaming = ref(false)
+const streamingLines = ref<string[]>([])
+let unlistenStreamFn: (() => void) | null = null
 const sessionId = ref('')
 const messagesContainer = ref<HTMLElement>()
 const inputRef = ref<HTMLTextAreaElement>()
@@ -649,6 +659,49 @@ async function copyMachineCode() {
 }
 
 // ============ Chat ============
+const loadingStatus = ref('')
+let loadingTimer: ReturnType<typeof setInterval> | null = null
+
+function startLoadingTimer() {
+  const stages = [
+    { time: 0, text: '正在启动 Python 环境...' },
+    { time: 3, text: '正在加载 Hermes Agent...' },
+    { time: 8, text: '正在连接 AI 服务...' },
+    { time: 15, text: '正在思考...' },
+    { time: 25, text: '正在查询相关信息...' },
+    { time: 40, text: '任务仍在进行中，请耐心等待...' },
+  ]
+  loadingStatus.value = stages[0].text
+  let nextIdx = 1
+  loadingTimer = setInterval(() => {
+    const elapsed = (Date.now() - loadingStartTime) / 1000
+    while (nextIdx < stages.length && elapsed >= stages[nextIdx].time) {
+      loadingStatus.value = stages[nextIdx].text
+      nextIdx++
+    }
+    if (nextIdx >= stages.length) {
+      // 超过40秒后，每10秒换一个说法
+      const extras = [
+        '还在处理中，请稍候...',
+        'AI 正在努力思考...',
+        '处理较慢，建议简化问题',
+        '仍在运行，请耐心等待...',
+      ]
+      const extraIdx = Math.min(Math.floor((elapsed - 40) / 10), extras.length - 1)
+      loadingStatus.value = extras[extraIdx]
+    }
+  }, 1000)
+}
+
+function stopLoadingTimer() {
+  if (loadingTimer) {
+    clearInterval(loadingTimer)
+    loadingTimer = null
+  }
+}
+
+let loadingStartTime = 0
+
 async function sendMessage() {
   if (!inputText.value.trim() || isLoading.value) return
 
@@ -656,12 +709,29 @@ async function sendMessage() {
   messages.value.push({ role: 'user', content: userMsg })
   inputText.value = ''
   isLoading.value = true
-  scrollToBottomWithRetry()
+  isStreaming.value = false
+  streamingLines.value = []
+  loadingStartTime = Date.now()
+  startLoadingTimer()
 
   autoResizeTextarea()
 
+  // 先注册流式监听
   try {
-    const result: { response: string; session_id: string } = await invoke('chat_completion', {
+    unlistenStreamFn = await listen<string>('chat-stream-line', (event) => {
+      if (!isStreaming.value) {
+        isStreaming.value = true
+      }
+      streamingLines.value.push(event.payload)
+      // 等 DOM 渲染完再滚动
+      nextTick(() => smartScrollToBottom())
+    })
+  } catch (e) {
+    console.warn('注册流式监听失败:', e)
+  }
+
+  try {
+    const result: { response: string; session_id: string } = await invoke('chat_stream', {
       prompt: userMsg,
       sessionId: sessionId.value,
     })
@@ -669,13 +739,19 @@ async function sendMessage() {
     if (result.session_id) {
       sessionId.value = result.session_id
     }
-    // 内容已推入，等 Vue 渲染后立刻滚到底
     nextTick(() => scrollToBottomWithRetry())
   } catch (e: any) {
     messages.value.push({ role: 'assistant', content: '', error: e.toString() })
     nextTick(() => scrollToBottomWithRetry())
   } finally {
     isLoading.value = false
+    isStreaming.value = false
+    streamingLines.value = []
+    stopLoadingTimer()
+    if (unlistenStreamFn) {
+      unlistenStreamFn()
+      unlistenStreamFn = null
+    }
   }
 }
 
@@ -683,6 +759,14 @@ function newChat() {
   messages.value = []
   sessionId.value = ''
   inputText.value = ''
+  loadingStatus.value = ''
+  streamingLines.value = []
+  isStreaming.value = false
+  stopLoadingTimer()
+  if (unlistenStreamFn) {
+    unlistenStreamFn()
+    unlistenStreamFn = null
+  }
   nextTick(() => scrollToBottomWithRetry())
 }
 
@@ -705,6 +789,17 @@ function scrollToBottomWithRetry(retries = 3) {
   scrollToBottom()
   if (retries > 0) {
     setTimeout(() => scrollToBottomWithRetry(retries - 1), 100)
+  }
+}
+
+// 流式更新时的智能滚动：用户手动向上翻则不打扰
+function smartScrollToBottom() {
+  const el = messagesContainer.value
+  if (!el) return
+  const threshold = 80
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+  if (isNearBottom) {
+    el.scrollTop = el.scrollHeight
   }
 }
 
@@ -1384,6 +1479,43 @@ html, body {
 }
 
 /* Typing Indicator */
+.loading-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  animation: pulse-text 2s ease-in-out infinite;
+}
+
+@keyframes pulse-text {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+/* Streaming Log */
+.streaming-log {
+  max-height: 360px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 6px;
+}
+
+.stream-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  padding: 1px 4px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.stream-line:not(:last-child) {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
 .typing-indicator {
   display: flex;
   gap: 4px;

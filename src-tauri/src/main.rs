@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -600,7 +601,8 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
         .env("MINIMAX_CN_API_KEY", &api_key)
         .env("HERMES_Q", prompt)
         .env("PYTHONUTF8", "1")
-        .env("PYTHONIOENCODING", "utf-8");
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUNBUFFERED", "1");
     // 使用 -c 方式直接调用 cli.main()，完全规避 Windows 上无扩展名脚本执行问题
     // 同时强制设置 stdout 编码为 utf-8，确保 GBK 系统下输出不乱码
     if let Some(agent_dir) = hermes.parent() {
@@ -611,7 +613,7 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
             String::new()
         };
         let python_code = format!(
-            "import sys,os; sys.stdout=__import__('io').TextIOWrapper(sys.stdout.buffer,encoding='utf-8',errors='replace'); sys.path.insert(0, '{}'); from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=True{})",
+            "import sys,os; sys.stdout=__import__('io').TextIOWrapper(sys.stdout.buffer,encoding='utf-8',errors='replace'); sys.path.insert(0, '{}'); from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=False{})",
             agent_dir_escaped, resume_arg
         );
         cmd.env("PYTHONPATH", agent_dir.to_string_lossy().to_string());
@@ -680,6 +682,149 @@ fn parse_hermes_output(raw: &str, old_session: &str) -> (String, String) {
     }
 
     (lines.join("\n"), new_session)
+}
+
+// ============ 流式读取（逐行思考过程） ============
+
+/// 逐行读取 Python 进程 stdout，实时发送到前端
+fn run_chat_stream_impl(
+    python: &Path,
+    hermes: &Path,
+    prompt: &str,
+    session_id: &str,
+    api_key: &str,
+    app_handle: &tauri::AppHandle,
+) -> Result<(String, String), String> {
+    let mut cmd = new_python_cmd(python);
+
+    cmd.env("MINIMAX_API_KEY", api_key)
+        .env("MINIMAX_CN_API_KEY", api_key)
+        .env("HERMES_Q", prompt)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUNBUFFERED", "1");
+
+    if let Some(agent_dir) = hermes.parent() {
+        let agent_dir_escaped = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let resume_arg = if !session_id.is_empty() {
+            format!(", resume='{}'", session_id.replace('\'', "\\'"))
+        } else {
+            String::new()
+        };
+        let python_code = format!(
+            "import sys,os; sys.stdout=__import__('io').TextIOWrapper(sys.stdout.buffer,encoding='utf-8',errors='replace'); sys.path.insert(0, '{}'); from cli import main; main(query=os.environ.get('HERMES_Q',''), quiet=False{})",
+            agent_dir_escaped, resume_arg
+        );
+        cmd.env("PYTHONPATH", agent_dir.to_string_lossy().to_string());
+        cmd.arg("-c").arg(&python_code);
+    } else {
+        cmd.arg(hermes)
+            .arg("chat")
+            .arg("-q")
+            .arg(prompt)
+            .arg("-Q");
+        if !session_id.is_empty() {
+            cmd.args(["--resume", session_id]);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 Hermes Agent 失败: {}", e))?;
+
+    let stdout = child.stdout.take().expect("无法获取 stdout");
+    let stderr = child.stderr.take().expect("无法获取 stderr");
+
+    // 后台线程读取 stderr，防止管道阻塞
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut reader = BufReader::new(stderr);
+        reader.read_to_end(&mut buf).ok();
+        buf
+    });
+
+    // 主线程逐行读取 stdout，实时转发
+    let mut reader = BufReader::new(stdout);
+    let mut full_output = String::new();
+    let mut line_buf: Vec<u8> = Vec::new();
+
+    loop {
+        line_buf.clear();
+        match reader.read_until(b'\n', &mut line_buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                let decoded = decode_output(&line_buf);
+                let trimmed = decoded.trim();
+                full_output.push_str(trimmed);
+                full_output.push('\n');
+
+                // 忽略空行和纯装饰线（保留 emoji 状态行）
+                if !trimmed.is_empty() {
+                    let _ = app_handle.emit("chat-stream-line", trimmed);
+                }
+            }
+            Err(e) => {
+                eprintln!("读取 stdout 流错误: {}", e);
+                break;
+            }
+        }
+    }
+
+    drop(reader);
+    drop(stdout);
+
+    let status = child.wait().map_err(|e| format!("等待进程结束失败: {}", e))?;
+    let stderr_bytes = stderr_thread.join().unwrap_or_default();
+    let stderr_text = decode_output(&stderr_bytes);
+
+    if !status.success() {
+        return Err(format!(
+            "Hermes Agent 错误 (exit:{:?})\n{}",
+            status.code(),
+            stderr_text
+        ));
+    }
+
+    let (response, new_session) = parse_hermes_output(&full_output, session_id);
+    Ok((response, new_session))
+}
+
+#[tauri::command]
+async fn chat_stream(prompt: String, session_id: String, app_handle: tauri::AppHandle) -> Result<ChatResult, String> {
+    // 验证许可证
+    let license_path = get_data_dir()?.join(LICENSE_FILE);
+    let saved_key = if license_path.exists() {
+        std::fs::read_to_string(&license_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if saved_key.is_empty() {
+        return Err("软件未激活，请先激活许可证".to_string());
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        let python = find_hermes_python()?;
+        let hermes = find_hermes_agent()?;
+        if let Some(agent_dir) = hermes.parent() {
+            ensure_hermes_deps(&python, agent_dir)?;
+        }
+        let config = AppConfig::load()?;
+        let api_key = config.effective_api_key();
+        if api_key.is_empty() {
+            return Err("请先在设置中配置 API Key，或联系作者获取内置 Key".to_string());
+        }
+        run_chat_stream_impl(&python, &hermes, &prompt, &session_id, &api_key, &app_handle)
+    })
+    .await
+    .map_err(|e| format!("内部线程错误: {}", e))?;
+
+    let (response, new_session) = result?;
+    Ok(ChatResult { response, session_id: new_session })
 }
 
 // ============ License Server HTTP Client ============
@@ -1143,6 +1288,7 @@ fn main() {
             deactivate_license,
             generate_activation_code,
             chat_completion,
+            chat_stream,
             save_api_config,
             get_api_config,
             save_feishu_config,
