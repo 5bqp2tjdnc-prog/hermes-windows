@@ -1790,6 +1790,7 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     let mut cmd = std::process::Command::new(&python);
     cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", &port.to_string(), "--no-open"])
         .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
+        .env("PYTHONPATH", agent_dir.to_string_lossy().to_string())  // 确保找到 hermes_cli 模块
         .stdout(std::process::Stdio::piped())  // 捕获 stdout 用于诊断
         .stderr(std::process::Stdio::piped());  // 捕获 stderr 用于诊断
     #[cfg(target_os = "windows")]
