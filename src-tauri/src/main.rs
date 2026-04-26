@@ -1790,31 +1790,64 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     let mut cmd = std::process::Command::new(&python);
     cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", &port.to_string(), "--no-open"])
         .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(std::process::Stdio::piped())  // 捕获 stdout 用于诊断
+        .stderr(std::process::Stdio::piped());  // 捕获 stderr 用于诊断
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    let child = cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
 
-    // 等待服务就绪（最多 15 秒）
+    // 等待服务就绪（最多 30 秒，每 2 秒检查一次）
     let url = format!("http://127.0.0.1:{}/api/status", port);
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|_| "HTTP 客户端错误")?;
 
     let mut ready = false;
-    for _ in 0..15 {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        if client.get(&url).send().await.is_ok() {
-            ready = true;
-            break;
+    let mut last_error = String::new();
+    for i in 0..15 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // 检查进程是否仍然存活
+        match child.try_wait() {
+            Ok(Some(exit_status)) => {
+                let stderr_output = std::mem::take(child.stderr.as_mut().unwrap());
+                let mut err_buf = String::new();
+                let _ = std::io::BufReader::new(stderr_output).read_to_string(&mut err_buf);
+                return Err(format!(
+                    "Dashboard 进程异常退出 (code: {:?})\n{}",
+                    exit_status.code(),
+                    err_buf.trim()
+                ));
+            }
+            Ok(None) => {} // 进程还在运行
+            Err(_) => {}
+        }
+
+        match client.get(&url).send().await {
+            Ok(_) => { ready = true; break; }
+            Err(e) => { last_error = e.to_string(); }
         }
     }
 
     if !ready {
-        return Err("Dashboard 启动超时".to_string());
+        // 尝试获取进程输出
+        let mut diag = String::new();
+        if let Some(stdout) = child.stdout.as_mut() {
+            let mut buf = String::new();
+            let _ = std::io::BufReader::new(stdout).read_to_string(&mut buf);
+            if !buf.trim().is_empty() { diag += &format!("stdout: {}\n", buf.trim()); }
+        }
+        if let Some(stderr) = child.stderr.as_mut() {
+            let mut buf = String::new();
+            let _ = std::io::BufReader::new(stderr).read_to_string(&mut buf);
+            if !buf.trim().is_empty() { diag += &format!("stderr: {}\n", buf.trim()); }
+        }
+        return Err(format!(
+            "Dashboard 启动超时 (30s)\n{}\n最后一次连接错误: {}",
+            diag, last_error
+        ));
     }
 
     // 在浏览器中打开
