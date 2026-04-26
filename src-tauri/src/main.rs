@@ -105,7 +105,7 @@ fn decode_output(bytes: &[u8]) -> String {
         return s.to_string();
     }
     // 回退到 GBK 解码
-    let (cow, _) = encoding_rs::GBK.decode(bytes);
+    let (cow, _encoding, _had_errors) = encoding_rs::GBK.decode(bytes);
     cow.to_string()
 }
 
