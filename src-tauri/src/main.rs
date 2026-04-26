@@ -785,7 +785,6 @@ fn run_chat_stream_impl(
     }
 
     drop(reader);
-    drop(stdout);
 
     let status = child.wait().map_err(|e| format!("等待进程结束失败: {}", e))?;
     let stderr_bytes = stderr_thread.join().unwrap_or_default();
@@ -932,7 +931,8 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
     }
 
     // 更新对话历史
-    let mut history = app_handle.state::<AppState>().chat_history.lock().unwrap();
+    let state = app_handle.state::<AppState>();
+    let mut history = state.chat_history.lock().unwrap();
     history.push(ApiMessage {
         role: "user".to_string(),
         content: prompt,
