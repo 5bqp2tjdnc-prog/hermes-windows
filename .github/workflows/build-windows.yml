@@ -50,6 +50,26 @@ jobs:
           fi
         shell: bash
 
+      # Build Web UI from hermes-agent source (output goes to hermes_cli/web_dist/)
+      - name: Build Web UI
+        shell: bash
+        run: |
+          mkdir -p /tmp/hermes-web
+          cd /tmp/hermes-web
+          unzip -o "$GITHUB_WORKSPACE/src-tauri/hermes-agent.zip"
+          cd web
+          npm ci
+          npm run build
+          cd ..
+          # Build output is in hermes_cli/web_dist/ (per vite.config.ts)
+          # The Rust launch_dashboard looks for web_dist/ at zip root, so:
+          mv hermes_cli/web_dist web_dist
+          # Re-zip with web_dist included
+          zip -r "$GITHUB_WORKSPACE/src-tauri/hermes-agent.zip" web_dist
+          rm -rf /tmp/hermes-web
+        env:
+          CI: true
+
       # Rust cache
       - name: Rust cache
         uses: swatinem/rust-cache@v2
