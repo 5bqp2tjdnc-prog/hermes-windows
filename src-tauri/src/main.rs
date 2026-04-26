@@ -1812,9 +1812,11 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
         // 检查进程是否仍然存活
         match child.try_wait() {
             Ok(Some(exit_status)) => {
-                let stderr_output = std::mem::take(child.stderr.as_mut().unwrap());
+                let stderr_output = child.stderr.take();
                 let mut err_buf = String::new();
-                let _ = std::io::BufReader::new(stderr_output).read_to_string(&mut err_buf);
+                if let Some(mut stderr) = stderr_output {
+                    let _ = std::io::BufReader::new(&mut stderr).read_to_string(&mut err_buf);
+                }
                 return Err(format!(
                     "Dashboard 进程异常退出 (code: {:?})\n{}",
                     exit_status.code(),
