@@ -384,8 +384,8 @@
               <div class="form-group">
                 <label>模型</label>
                 <select v-model="apiConfig.model">
-                  <option value="MiniMax-Text-01">MiniMax-Text-01（默认）</option>
-                  <option value="MiniMax-M2.7-highspeed">MiniMax-M2.7-HighSpeed</option>
+                  <option value="MiniMax-M2.7-highspeed">MiniMax-M2.7-HighSpeed（默认）</option>
+                  <option value="MiniMax-Text-01">MiniMax-Text-01</option>
                   <option value="OpenAI/gpt-4o">OpenAI GPT-4o</option>
                   <option value="claude-sonnet-4">Claude Sonnet 4</option>
                   <option value="claude-opus-4">Claude Opus 4</option>
@@ -551,8 +551,8 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'info',
 const showApiKey = ref(false)
 const apiConfig = ref({
   api_key: '',
-  api_base: 'https://api.minimaxi.com/anthropic',
-  model: 'MiniMax-Text-01',
+  api_base: 'https://api.minimaxi.com/v1',
+  model: 'MiniMax-M2.7-highspeed',
   feishu_app_id: '',
   feishu_app_secret: '',
   feishu_chat_id: '',

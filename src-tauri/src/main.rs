@@ -231,7 +231,7 @@ impl AppConfig {
             return Ok(AppConfig {
                 api_key: String::new(),
                 api_base: DEFAULT_API_BASE.to_string(),
-                model: "MiniMax-Text-01".to_string(),
+                model: "MiniMax-M2.7-highspeed".to_string(),
                 ..Default::default()
             });
         }
@@ -852,10 +852,18 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
     }
 
     let config = AppConfig::load()?;
-    let api_key = config.effective_api_key();
-    if api_key.is_empty() {
-        return Err("请先在设置中配置 API Key，或联系作者获取内置 Key".to_string());
-    }
+
+    // 使用内置 Key 时忽略 config.json 中可能残留的错误配置
+    let use_builtin = config.api_key.is_empty() || config.api_key == BUILTIN_API_KEY;
+    let (api_key, model, api_base) = if use_builtin {
+        (BUILTIN_API_KEY.to_string(), "MiniMax-M2.7-highspeed".to_string(), DEFAULT_API_BASE.to_string())
+    } else {
+        let key = config.api_key.clone();
+        if key.is_empty() {
+            return Err("请先在设置中配置 API Key，或联系作者获取内置 Key".to_string());
+        }
+        (key, config.model.clone(), config.api_base.clone())
+    };
 
     // 获取对话历史
     let history = app_handle.state::<AppState>().chat_history.lock().unwrap().clone();
@@ -868,7 +876,7 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
     });
 
     // MiniMax 使用 OpenAI 兼容 API
-    let base = config.api_base.trim_end_matches('/');
+    let base = api_base.trim_end_matches('/');
     let url = format!("{}/chat/completions", base);
 
     let client = reqwest::Client::builder()
@@ -877,7 +885,7 @@ async fn chat_direct(prompt: String, app_handle: tauri::AppHandle) -> Result<Cha
         .map_err(|e| format!("HTTP 客户端错误: {}", e))?;
 
     let request_body = serde_json::json!({
-        "model": config.model,
+        "model": model,
         "max_tokens": 4096,
         "messages": messages,
     });
