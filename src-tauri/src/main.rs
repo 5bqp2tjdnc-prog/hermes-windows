@@ -349,55 +349,47 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
 }
 
 fn ensure_hermes_deps(python: &Path, agent_dir: &Path) -> Result<(), String> {
-    // 检查核心 Python 依赖是否已安装
-    let check = new_python_cmd(python)
-        .arg("-c")
-        .arg("import yaml, prompt_toolkit, openai, rich")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("检查依赖失败: {}", e))?;
+    // 检查核心 Python 依赖是否已安装（静默执行，不显示黑窗）
+    let deps_ok = {
+        let mut cmd = new_python_cmd(python);
+        cmd.arg("-c").arg("import yaml, prompt_toolkit, openai, rich")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+        cmd.output().map_err(|e| format!("检查依赖失败: {}", e))?
+            .status.success()
+    };
 
-    if check.status.success() {
+    if deps_ok {
         return Ok(());
     }
 
-    // 缺失依赖，自动安装
-    let install = new_python_cmd(python)
-        .arg("-m")
-        .arg("pip")
-        .arg("install")
+    // 缺失依赖，自动静默安装
+    let mut install = new_python_cmd(python);
+    install.arg("-m").arg("pip").arg("install")
         .arg(agent_dir.to_string_lossy().to_string())
-        .output()
-        .map_err(|e| format!("自动安装 Hermes Agent 依赖失败: {}", e))?;
-
-    if install.status.success() {
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    install.creation_flags(0x08000000);
+    if install.output().map_err(|e| format!("自动安装依赖失败: {}", e))?.status.success() {
         return Ok(());
     }
 
     // 备用：逐个安装核心依赖
-    let fallback = new_python_cmd(python)
-        .arg("-m")
-        .arg("pip")
-        .arg("install")
-        .arg("openai")
-        .arg("anthropic")
-        .arg("httpx[socks]")
-        .arg("rich")
-        .arg("fire")
-        .arg("tenacity")
-        .arg("pyyaml")
-        .arg("requests")
-        .arg("jinja2")
-        .arg("pydantic")
-        .arg("prompt_toolkit")
-        .arg("python-dotenv")
-        .output()
-        .map_err(|e| format!("安装核心依赖失败: {}", e))?;
-
-    if !fallback.status.success() {
-        let stderr = String::from_utf8_lossy(&fallback.stderr);
-        return Err(format!("自动安装 Python 依赖失败，请尝试在设置页面重新安装运行环境:\n{}", stderr));
+    let mut fallback = new_python_cmd(python);
+    fallback.arg("-m").arg("pip").arg("install")
+        .arg("openai").arg("anthropic").arg("httpx[socks]")
+        .arg("rich").arg("fire").arg("tenacity")
+        .arg("pyyaml").arg("requests").arg("jinja2")
+        .arg("pydantic").arg("prompt_toolkit").arg("python-dotenv")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    fallback.creation_flags(0x08000000);
+    if !fallback.output().map_err(|e| format!("安装核心依赖失败: {}", e))?.status.success() {
+        return Err("自动安装 Python 依赖失败，请尝试在设置页面重新安装运行环境".to_string());
     }
 
     Ok(())
@@ -423,7 +415,8 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
 
     cmd.env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
-        .env("HERMES_Q", prompt);
+        .env("HERMES_Q", prompt)
+        .env("PYTHONUTF8", "1");
     // 使用 -c 方式直接调用 cli.main()，完全规避 Windows 上无扩展名脚本执行问题
     if let Some(agent_dir) = hermes.parent() {
         let agent_dir_escaped = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
