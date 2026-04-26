@@ -86,7 +86,7 @@ struct NanjingActivate {
 
 const ACTIVATION_SALT: &[u8] = b"HermesAI_v1_2025";
 const LICENSE_FILE: &str = "license.dat";
-const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic";
+const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic/v1";
 const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
 
 // 内置 MiniMax API Key（发布前确认额度充足）
