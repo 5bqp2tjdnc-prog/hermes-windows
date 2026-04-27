@@ -2039,13 +2039,59 @@ async fn hermes_chat_send(message: String, app_handle: tauri::AppHandle) -> Resu
     Ok(ChatResult { response, session_id: String::new() })
 }
 
+/// 确保 Hermes 聊天 Web UI 正在运行（端口 9121），返回端口号
+async fn ensure_chat_web_ui() -> Result<u16, String> {
+    const CHAT_PORT: u16 = 9121;
+    let url = format!("http://127.0.0.1:{CHAT_PORT}");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|_| "HTTP 客户端错误")?;
+
+    // 检查是否已经在运行
+    if client.get(&format!("{url}/api/status")).send().await.is_ok() {
+        return Ok(CHAT_PORT);
+    }
+
+    // 需要启动
+    let python = find_hermes_python()?;
+    let hermes = find_hermes_agent()?;
+    let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
+
+    let web_dist = agent_dir.join("web_dist");
+    if !web_dist.exists() {
+        return Err("Hermes Web UI 前端文件未找到，请先安装运行环境".to_string());
+    }
+
+    let mut cmd = std::process::Command::new(&python);
+    cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", &CHAT_PORT.to_string(), "--no-open"])
+        .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
+        .env("PYTHONPATH", agent_dir.to_string_lossy().to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    cmd.spawn().map_err(|e| format!("启动聊天 Web UI 失败: {}", e))?;
+
+    // 等待就绪（最多 30s）
+    for _ in 0..15 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if client.get(&format!("{url}/api/status")).send().await.is_ok() {
+            return Ok(CHAT_PORT);
+        }
+    }
+
+    Err(format!("聊天 Web UI (端口 {CHAT_PORT}) 启动超时 (30s)"))
+}
+
 /// 在 WebView 窗口中打开管理后台
 #[tauri::command]
 async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use tauri::WebviewWindowBuilder;
 
-    // 先确保后台仪表板已经启动
-    let dashboard_url = format!("http://127.0.0.1:9119");
+    let dashboard_url = "http://127.0.0.1:9119";
 
     // 检查是否已有窗口
     if let Some(window) = app_handle.get_webview_window("management-backend") {
@@ -2064,7 +2110,6 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
     }
 
     // 检查 Dashboard 是否已经在运行
-    let mut child = None;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -2082,9 +2127,9 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x08000000);
 
-        child = Some(cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?);
+        cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
 
-        // 等待就绪
+        // 等待就绪（最多 30s）
         let mut ready = false;
         for _ in 0..15 {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -2094,7 +2139,6 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
             }
         }
         if !ready {
-            if let Some(ref mut c) = child { let _ = c.kill(); }
             return Err("Dashboard 启动超时 (30s)".to_string());
         }
     }
@@ -2117,7 +2161,7 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
     }))
 }
 
-/// 在 WebView 窗口中打开 AI 对话
+/// 在 WebView 窗口中打开 AI 对话（启动独立的 Hermes Web UI 实例）
 #[tauri::command]
 async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use tauri::WebviewWindowBuilder;
@@ -2125,27 +2169,27 @@ async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     // 检查是否已有窗口
     if let Some(window) = app_handle.get_webview_window("hermes-chat") {
         window.set_focus().ok();
-        return Ok(serde_json::json!({"success": true}));
+        return Ok(serde_json::json!({"success": true, "url": format!("http://127.0.0.1:9121")}));
     }
 
-    // 确保 Hermes 聊天服务正在运行
-    let state = app_handle.state::<HermesChatState>();
-    ensure_chat_server(&state, &app_handle).await?;
+    // 启动独立的 Hermes Web UI 实例（端口 9121）
+    let port = ensure_chat_web_ui().await?;
+    let chat_url = format!("http://127.0.0.1:{port}");
 
-    // 创建 WebView 窗口
+    // 创建 WebView 窗口，显示完整的 Hermes Web UI（包含聊天、任务、技能、记忆等功能）
     let _window = WebviewWindowBuilder::new(
         &app_handle,
         "hermes-chat",
-        tauri::WebviewUrl::External("http://127.0.0.1:9120".parse().map_err(|_| "URL 格式错误")?),
+        tauri::WebviewUrl::External(chat_url.parse().map_err(|_| "URL 格式错误")?),
     )
     .title("Hermes AI 对话")
-    .inner_size(800.0, 700.0)
-    .min_inner_size(600.0, 500.0)
+    .inner_size(1000.0, 750.0)
+    .min_inner_size(700.0, 500.0)
     .resizable(true)
     .build()
     .map_err(|e| format!("打开 AI 对话窗口失败: {}", e))?;
 
-    Ok(serde_json::json!({"success": true}))
+    Ok(serde_json::json!({"success": true, "url": chat_url}))
 }
 
 // ============ Main ============

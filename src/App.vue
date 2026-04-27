@@ -10,7 +10,7 @@
             <span class="logo-subtitle">Agent</span>
           </div>
         </div>
-        <span class="version-tag">v1.0.0</span>
+        <span class="version-tag">v{{ appVersion }}</span>
       </div>
 
       <nav class="sidebar-nav">
@@ -108,9 +108,9 @@
               <span class="welcome-caduceus">☤</span>
             </div>
             <h2 class="welcome-title">Hermes AI 对话</h2>
-            <p class="welcome-desc">支持联网搜索、工具调用和任务执行</p>
+            <p class="welcome-desc">完整的 Hermes Web UI：聊天、任务、技能、记忆管理</p>
             <div class="launch-actions">
-              <p class="launch-desc">AI 对话已在新窗口中打开，支持联网搜索获取最新信息</p>
+              <p class="launch-desc">AI 对话新窗口已打开，显示完整的 Hermes Web 界面</p>
               <button class="btn btn-primary launch-btn" @click="openChatWindow">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
                   <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
@@ -455,10 +455,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
 
 // ============ State ============
 type View = 'chat-launch' | 'settings' | 'dashboard-launch'
 const currentView = ref<View>('dashboard-launch')
+const appVersion = ref('1.0.1')
 
 // Dashboard
 const launchState = ref<'idle' | 'launching' | 'started' | 'error'>('idle')
@@ -715,6 +717,9 @@ async function setupNodejs() {
 
 // ============ Init ============
 onMounted(async () => {
+  try {
+    appVersion.value = await getVersion()
+  } catch (_) { /* fallback to default */ }
   await Promise.all([loadLicenseInfo(), loadApiConfig()])
   checkEnvironment()
 })
