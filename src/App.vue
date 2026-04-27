@@ -816,8 +816,8 @@ async function sendMessage() {
   }
 
   try {
-    const result: { response: string; session_id: string } = await invoke('chat_direct', {
-      prompt: userMsg,
+    const result: { response: string; session_id: string } = await invoke('hermes_chat_send', {
+      message: userMsg,
     })
     messages.value.push({ role: 'assistant', content: result.response })
     if (result.session_id) {
@@ -896,7 +896,7 @@ async function launchDashboard() {
   launchError.value = ''
   currentView.value = 'dashboard-launch'
   try {
-    const result: any = await invoke('launch_dashboard')
+    const result: any = await invoke('open_management_backend')
     if (result.success) {
       dashboardUrl.value = result.url
       launchState.value = 'started'

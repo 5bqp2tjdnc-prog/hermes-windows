@@ -5,10 +5,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::OnceLock;
-use tauri::Emitter;
-use tauri::Manager;
+use std::process::{Child, Stdio};
+use std::sync::{Mutex, OnceLock};
+use tauri::{Emitter, Manager};
 use futures_util::StreamExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -1909,6 +1908,215 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     }))
 }
 
+// ============ Hermes Chat Server ============
+
+/// 持久的 Hermes 聊天 HTTP 服务（端口 9120）。
+/// 在后台运行 Python FastAPI 服务器，保持 AIAgent 常驻内存。
+pub struct HermesChatState {
+    pub process: Mutex<Option<Child>>,
+}
+
+impl HermesChatState {
+    pub fn new() -> Self {
+        HermesChatState { process: Mutex::new(None) }
+    }
+}
+
+/// 查找打包的资源文件（开发环境和生产环境均可）
+fn find_resource_script(app_handle: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
+    // 1. 资源目录（生产环境）
+    if let Ok(dir) = app_handle.path().resource_dir() {
+        let paths = [
+            dir.join("resources").join(name),
+            dir.join(name),
+        ];
+        for p in &paths {
+            if p.exists() { return Ok(p.clone()); }
+        }
+    }
+    // 2. 开发环境
+    let dev = PathBuf::from("src-tauri/resources").join(name);
+    if dev.exists() { return Ok(dev); }
+    Err(format!("未找到资源文件: {}", name))
+}
+
+/// 确保 Hermes 聊天服务正在运行，返回端口号
+async fn ensure_chat_server(state: &HermesChatState, app_handle: &tauri::AppHandle) -> Result<u16, String> {
+    // 先检查进程是否还活着（不跨 await，后续 health check 在锁外）
+    let pid = {
+        let mut guard = state.process.lock().unwrap();
+        if let Some(ref mut child) = *guard {
+            match child.try_wait() {
+                Ok(None) => return Ok(9120),
+                _ => {}
+            }
+        }
+        // 需要启动新进程
+        let python = find_hermes_python()?;
+        let hermes = find_hermes_agent()?;
+        let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
+        let script = find_resource_script(app_handle, "hermes_chat_server.py")?;
+        let config = AppConfig::load()?;
+        let api_key = config.effective_api_key();
+        let port: u16 = 9120;
+
+        let mut cmd = std::process::Command::new(&python);
+        cmd.arg(&script)
+            .env("HERMES_AGENT_DIR", agent_dir)
+            .env("MINIMAX_API_KEY", &api_key)
+            .env("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+            .env("HERMES_MODEL", "MiniMax-M2.7-highspeed")
+            .env("HERMES_CHAT_PORT", port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+
+        let child = cmd.spawn().map_err(|e| format!("启动 Hermes 聊天服务失败: {}", e))?;
+        let pid = child.id();
+        *guard = Some(child);
+        pid
+    }; // guard 在这里释放，后续可以 .await
+
+    // 等待服务就绪（最多 10s）
+    let url = format!("http://127.0.0.1:{}/api/health", 9120);
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        match reqwest::get(&url).await {
+            Ok(resp) => {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if body["ready"].as_bool().unwrap_or(false) {
+                        return Ok(9120);
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    Err(format!("Hermes 聊天服务 (PID:{}) 启动超时", pid))
+}
+
+/// 发送消息到持久化的 Hermes 聊天服务
+#[tauri::command]
+async fn hermes_chat_send(message: String, app_handle: tauri::AppHandle) -> Result<ChatResult, String> {
+    let state = app_handle.state::<HermesChatState>();
+    let port = ensure_chat_server(&state, &app_handle).await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP 客户端错误: {}", e))?;
+
+    let resp = client
+        .post(&format!("http://127.0.0.1:{}/api/chat", port))
+        .json(&serde_json::json!({"message": message}))
+        .send()
+        .await
+        .map_err(|e| format!("聊天请求失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(format!("Hermes 聊天错误: {}", err));
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+    let response = body["response"].as_str().unwrap_or("").to_string();
+
+    // 将完整响应切成片段发送到前端流
+    let mut emitted = String::new();
+    for ch in response.chars() {
+        emitted.push(ch);
+        if ch == '\n' || ch == '。' || ch == '！' || ch == '？' || emitted.len() >= 50 {
+            let _ = app_handle.emit("chat-stream-line", &emitted);
+            emitted.clear();
+        }
+    }
+    if !emitted.is_empty() {
+        let _ = app_handle.emit("chat-stream-line", &emitted);
+    }
+
+    Ok(ChatResult { response, session_id: String::new() })
+}
+
+/// 在 WebView 窗口中打开管理后台
+#[tauri::command]
+async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri::WebviewWindowBuilder;
+
+    // 先确保后台仪表板已经启动
+    let dashboard_url = format!("http://127.0.0.1:9119");
+
+    // 检查是否已有窗口
+    if let Some(window) = app_handle.get_webview_window("management-backend") {
+        window.set_focus().ok();
+        return Ok(serde_json::json!({"success": true, "url": dashboard_url}));
+    }
+
+    // 先启动 Dashboard 服务
+    let python = find_hermes_python()?;
+    let hermes = find_hermes_agent()?;
+    let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
+
+    let web_dist = agent_dir.join("web_dist");
+    if !web_dist.exists() {
+        return Err("管理后台前端文件未找到，请先安装运行环境".to_string());
+    }
+
+    // 检查 Dashboard 是否已经在运行
+    let mut child = None;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|_| "HTTP 客户端错误")?;
+
+    let already_running = client.get(&format!("{}/api/status", dashboard_url)).send().await.is_ok();
+
+    if !already_running {
+        let mut cmd = std::process::Command::new(&python);
+        cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", "9119", "--no-open"])
+            .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
+            .env("PYTHONPATH", agent_dir.to_string_lossy().to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+
+        child = Some(cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?);
+
+        // 等待就绪
+        let mut ready = false;
+        for _ in 0..15 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if client.get(&format!("{}/api/status", dashboard_url)).send().await.is_ok() {
+                ready = true;
+                break;
+            }
+        }
+        if !ready {
+            if let Some(ref mut c) = child { let _ = c.kill(); }
+            return Err("Dashboard 启动超时 (30s)".to_string());
+        }
+    }
+
+    // 创建 WebView 窗口
+    let _window = WebviewWindowBuilder::new(
+        &app_handle,
+        "management-backend",
+        tauri::WebviewUrl::External(dashboard_url.parse().map_err(|_| "URL 格式错误")?),
+    )
+    .title("Hermes 管理后台")
+    .inner_size(1200.0, 800.0)
+    .resizable(true)
+    .build()
+    .map_err(|e| format!("打开管理后台窗口失败: {}", e))?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "url": dashboard_url,
+    }))
+}
+
 // ============ Main ============
 
 fn main() {
@@ -1917,6 +2125,7 @@ fn main() {
             hermes_ready: Mutex::new(false),
             chat_history: Mutex::new(Vec::new()),
         })
+        .manage(HermesChatState::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
@@ -1929,6 +2138,8 @@ fn main() {
             chat_stream,
             chat_direct,
             launch_dashboard,
+            hermes_chat_send,
+            open_management_backend,
             save_api_config,
             get_api_config,
             save_feishu_config,
@@ -1937,6 +2148,18 @@ fn main() {
             setup_hermes_environment,
             setup_nodejs,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                // Clean up the Hermes chat server process
+                if let Some(state) = window.try_state::<HermesChatState>() {
+                    let mut guard = state.process.lock().unwrap();
+                    if let Some(ref mut child) = *guard {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

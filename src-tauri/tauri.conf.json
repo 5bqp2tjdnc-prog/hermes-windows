@@ -37,7 +37,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["hermes-agent.zip"],
+    "resources": ["hermes-agent.zip", "resources/hermes_chat_server.py"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",
