@@ -571,9 +571,10 @@ fn ensure_hermes_deps(python: &Path, agent_dir: &Path) -> Result<(), String> {
     }
 
     // 检查核心 Python 依赖是否已安装（静默执行，不显示黑窗）
+    // WebUI server.py 也需要 python-dotenv，所以一起检查
     let deps_ok = {
         let mut cmd = new_python_cmd(python);
-        cmd.arg("-c").arg("import yaml, prompt_toolkit, openai, rich, fastapi, uvicorn")
+        cmd.arg("-c").arg("import yaml, prompt_toolkit, openai, rich, fastapi, uvicorn, dotenv")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         #[cfg(target_os = "windows")]
@@ -2171,7 +2172,12 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         .env("HERMES_WEBUI_PORT", WEBUI_PORT.to_string())
         .env("HERMES_WEBUI_HOST", "127.0.0.1")
         .env("HERMES_WEBUI_AGENT_DIR", agent_dir)
-        .env("PYTHONPATH", webui_extract_dir.to_string_lossy().to_string())
+        // 将 agent_dir 也加入 PYTHONPATH（与管理后台一致），
+        // 确保 hermes_cli、run_agent.py 等始终可导入
+        .env("PYTHONPATH", format!("{}{}{}",
+            agent_dir.to_string_lossy(),
+            std::env::consts::PATH_SEPARATOR,
+            webui_extract_dir.to_string_lossy()))
         .env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
         .env("HERMES_MODEL", &config.model)
