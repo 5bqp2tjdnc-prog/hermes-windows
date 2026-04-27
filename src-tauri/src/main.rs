@@ -2121,7 +2121,10 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         return Err("解压后未找到 hermes-webui/server.py".to_string());
     }
 
-    // 启动服务器
+    // 启动服务器（传入 MiniMax API Key 和模型配置）
+    let config = AppConfig::load()?;
+    let api_key = config.effective_api_key();
+
     let python = find_hermes_python()?;
     let hermes = find_hermes_agent()?;
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
@@ -2132,6 +2135,9 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         .env("HERMES_WEBUI_HOST", "127.0.0.1")
         .env("HERMES_WEBUI_AGENT_DIR", agent_dir)
         .env("PYTHONPATH", webui_extract_dir.to_string_lossy().to_string())
+        .env("MINIMAX_API_KEY", &api_key)
+        .env("MINIMAX_CN_API_KEY", &api_key)
+        .env("HERMES_MODEL", &config.model)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
@@ -2150,18 +2156,10 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     Err(format!("Hermes WebUI (端口 {WEBUI_PORT}) 启动超时 (30s)"))
 }
 
-/// 在 WebView 窗口中打开管理后台
+/// 启动管理后台，返回 URL（内嵌显示，不弹窗）
 #[tauri::command]
 async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    use tauri::WebviewWindowBuilder;
-
     let dashboard_url = "http://127.0.0.1:9119";
-
-    // 检查是否已有窗口
-    if let Some(window) = app_handle.get_webview_window("management-backend") {
-        window.set_focus().ok();
-        return Ok(serde_json::json!({"success": true, "url": dashboard_url}));
-    }
 
     // 先启动 Dashboard 服务
     let python = find_hermes_python()?;
@@ -2207,53 +2205,22 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
         }
     }
 
-    // 创建 WebView 窗口
-    let _window = WebviewWindowBuilder::new(
-        &app_handle,
-        "management-backend",
-        tauri::WebviewUrl::External(dashboard_url.parse().map_err(|_| "URL 格式错误")?),
-    )
-    .title("Hermes 管理后台")
-    .inner_size(1200.0, 800.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("打开管理后台窗口失败: {}", e))?;
-
     Ok(serde_json::json!({
         "success": true,
         "url": dashboard_url,
     }))
 }
 
-/// 在 WebView 窗口中打开 AI 对话（启动独立的 Hermes 原始 WebUI）
+/// 启动 AI 对话 WebUI，返回 URL（内嵌显示，不弹窗）
 #[tauri::command]
 async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    use tauri::WebviewWindowBuilder;
-
-    // 检查是否已有窗口
-    if let Some(window) = app_handle.get_webview_window("hermes-chat") {
-        window.set_focus().ok();
-        return Ok(serde_json::json!({"success": true, "url": format!("http://127.0.0.1:9122")}));
-    }
-
-    // 启动独立的 Hermes 原始 WebUI 实例（端口 9122，同本机 localhost:8787）
     let port = ensure_webui_server(&app_handle).await?;
     let webui_url = format!("http://127.0.0.1:{port}");
 
-    // 创建 WebView 窗口，显示原始的 Hermes Web UI（聊天、任务、技能、记忆面板）
-    let _window = WebviewWindowBuilder::new(
-        &app_handle,
-        "hermes-chat",
-        tauri::WebviewUrl::External(webui_url.parse().map_err(|_| "URL 格式错误")?),
-    )
-    .title("Hermes AI 对话")
-    .inner_size(1000.0, 750.0)
-    .min_inner_size(700.0, 500.0)
-    .resizable(true)
-    .build()
-    .map_err(|e| format!("打开 AI 对话窗口失败: {}", e))?;
-
-    Ok(serde_json::json!({"success": true, "url": webui_url}))
+    Ok(serde_json::json!({
+        "success": true,
+        "url": webui_url,
+    }))
 }
 
 // ============ Main ============

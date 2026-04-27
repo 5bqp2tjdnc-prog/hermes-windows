@@ -16,8 +16,8 @@
       <nav class="sidebar-nav">
         <button
           class="nav-item"
-          :class="{ active: currentView === 'chat-launch' }"
-          @click="openChatWindow"
+          :class="{ active: currentView === 'chat' }"
+          @click="openChatView"
         >
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
@@ -26,8 +26,8 @@
         </button>
         <button
           class="nav-item"
-          :class="{ active: currentView === 'dashboard-launch' }"
-          @click="launchDashboard"
+          :class="{ active: currentView === 'dashboard' }"
+          @click="openDashboardView"
           :disabled="!envReady"
         >
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -38,6 +38,18 @@
             <line x1="4" y1="4" x2="9" y2="9"/>
           </svg>
           管理后台
+        </button>
+        <button
+          class="nav-item"
+          :class="{ active: currentView === 'guide' }"
+          @click="currentView = 'guide'"
+        >
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          使用说明
         </button>
         <button
           class="nav-item"
@@ -53,17 +65,10 @@
       </nav>
 
       <div class="sidebar-footer">
-        <div class="license-status" :class="licenseClass">
-          <div class="status-dot"></div>
-          <span>{{ licenseText }}</span>
-        </div>
-        <div v-if="licenseInfo.activated && licenseInfo.days_left < 30" class="license-warning">
+        <div class="license-warning" v-if="licenseInfo.activated && licenseInfo.days_left < 30">
           即将到期 · {{ licenseInfo.days_left }} 天
         </div>
-        <div class="env-indicator" :class="{ ready: envReady }">
-          <span class="env-dot"></span>
-          <span class="env-label">{{ envReady ? '运行环境就绪' : '环境检查中...' }}</span>
-        </div>
+        <div class="sidebar-version">v{{ appVersion }}</div>
       </div>
     </aside>
 
@@ -90,94 +95,124 @@
           </button>
         </div>
       </transition>
-      <!-- Chat Launch View -->
-      <div v-if="currentView === 'chat-launch'" class="chat-view">
-        <div class="chat-header">
-          <div class="chat-header-left">
-            <h2>
-              <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-              </svg>
-              AI 对话
-            </h2>
-          </div>
-        </div>
-        <div class="chat-messages">
-          <div class="welcome-screen">
-            <div class="welcome-logo">
-              <span class="welcome-caduceus">☤</span>
-            </div>
-            <h2 class="welcome-title">Hermes AI 对话</h2>
-            <p class="welcome-desc">完整的 Hermes Web UI：聊天、任务、技能、记忆管理</p>
-            <div class="launch-actions">
-              <p class="launch-desc">AI 对话新窗口已打开，显示完整的 Hermes Web 界面</p>
-              <button class="btn btn-primary launch-btn" @click="openChatWindow">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
-                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-                </svg>
-                打开对话窗口
-              </button>
-            </div>
-          </div>
-        </div>
+      <!-- AI 对话 (iframe 内嵌) -->
+      <div v-if="currentView === 'chat'" class="iframe-view">
+        <iframe :src="chatUrl" frameborder="0" class="app-iframe" allow="clipboard-read; clipboard-write"></iframe>
       </div>
 
-      <!-- Dashboard Launch View -->
-      <div v-else-if="currentView === 'dashboard-launch'" class="chat-view">
-        <div class="chat-header">
-          <div class="chat-header-left">
-            <h2>
-              <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="16 3 21 3 21 8"/>
-                <line x1="4" y1="20" x2="21" y2="3"/>
-                <polyline points="21 16 21 21 16 21"/>
-                <line x1="15" y1="15" x2="21" y2="21"/>
-                <line x1="4" y1="4" x2="9" y2="9"/>
-              </svg>
-              管理后台
-            </h2>
-          </div>
+      <!-- 管理后台 (iframe 内嵌) -->
+      <div v-else-if="currentView === 'dashboard'" class="iframe-view">
+        <iframe :src="dashboardUrl" frameborder="0" class="app-iframe"></iframe>
+      </div>
+
+      <!-- 使用说明 -->
+      <div v-else-if="currentView === 'guide'" class="settings-view">
+        <div class="settings-header">
+          <h2>
+            <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            使用说明
+          </h2>
         </div>
-        <div class="chat-messages">
-          <div class="welcome-screen">
-            <div class="welcome-logo">
-              <span class="welcome-caduceus">☤</span>
+
+        <div class="settings-grid guide-grid">
+          <section class="settings-card">
+            <div class="card-header">
+              <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              <h3>软件简介</h3>
             </div>
-            <h2 class="welcome-title">Hermes 管理后台</h2>
-            <p class="welcome-desc">启动完整的 Hermes 管理后台</p>
-            <div class="launch-status" v-if="launchState === 'launching'">
-              <div class="launch-spinner"></div>
-              <p>正在启动 Hermes Dashboard...</p>
+            <div class="card-body">
+              <p class="guide-text">
+                Hermes Agent 是一款基于 MiniMax M2.7 大模型的 AI 助手软件。支持联网搜索、工具调用和任务执行，提供完整的 AI 对话体验。
+              </p>
+              <p class="guide-text" style="margin-top: 12px;">
+                本软件内置了 MiniMax M2.7-HighSpeed 大模型，开箱即用，无需额外配置 API Key。
+              </p>
             </div>
-            <div class="launch-status" v-else-if="launchState === 'started'">
-              <div class="launch-success-icon">✓</div>
-              <p class="launch-url">Dashboard 已在 <a :href="dashboardUrl" target="_blank">{{ dashboardUrl }}</a> 启动</p>
-              <p class="launch-hint">浏览器已自动打开，你也可以点击上面链接</p>
-              <button class="btn btn-primary launch-btn" @click="openDashboardUrl">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
-                  <polyline points="16 3 21 3 21 8"/>
-                  <line x1="4" y1="20" x2="21" y2="3"/>
-                </svg>
-                在浏览器中打开
-              </button>
+          </section>
+
+          <section class="settings-card">
+            <div class="card-header">
+              <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <h3>使用流程</h3>
             </div>
-            <div class="launch-status" v-else-if="launchState === 'error'">
-              <div class="launch-error-icon">!</div>
-              <p class="launch-error-msg">{{ launchError }}</p>
-              <button class="btn btn-primary launch-btn" @click="launchDashboard">重试</button>
+            <div class="card-body">
+              <div class="guide-flow">
+                <div class="guide-step">
+                  <span class="guide-step-num">1</span>
+                  <div>
+                    <strong>激活许可证</strong>
+                    <p class="guide-hint">首次使用需在「设置」页面复制机器码，联系作者获取激活码后激活</p>
+                  </div>
+                </div>
+                <div class="guide-step">
+                  <span class="guide-step-num">2</span>
+                  <div>
+                    <strong>安装运行环境</strong>
+                    <p class="guide-hint">在「设置」→「运行环境」中检查 Python 和 Hermes Agent 是否已安装，如未安装点击安装</p>
+                  </div>
+                </div>
+                <div class="guide-step">
+                  <span class="guide-step-num">3</span>
+                  <div>
+                    <strong>开始使用</strong>
+                    <p class="guide-hint">环境就绪后，点击左侧「AI 对话」即可开始聊天，支持联网搜索、工具调用等功能</p>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div v-else class="launch-actions">
-              <p class="launch-desc">管理后台提供完整的 Hermes Agent 功能：对话管理、技能配置、环境变量、定时任务等</p>
-              <button class="btn btn-primary launch-btn" @click="launchDashboard" :disabled="!envReady">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
-                  <polyline points="16 3 21 3 21 8"/>
-                  <line x1="4" y1="20" x2="21" y2="3"/>
-                </svg>
-                启动管理后台
-              </button>
-              <p v-if="!envReady" class="launch-hint" style="color: var(--error);">运行环境未就绪，请先在设置中检查</p>
+          </section>
+
+          <section class="settings-card">
+            <div class="card-header">
+              <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+              </svg>
+              <h3>如何修改设置</h3>
             </div>
-          </div>
+            <div class="card-body">
+              <ul class="guide-list">
+                <li><strong>API 配置</strong>：在「设置」→「API 配置」中可以配置 API Key 和模型。留空则使用内置 MiniMax Key，填入自己的 Key 则使用自配 API</li>
+                <li><strong>模型选择</strong>：默认为 MiniMax-M2.7-HighSpeed，可在 API 配置的下拉菜单中切换</li>
+                <li><strong>运行环境</strong>：在「设置」→「运行环境」中可检查和管理 Python、Hermes Agent、Node.js 等依赖</li>
+                <li><strong>飞书推送</strong>：支持配置飞书机器人，用于消息推送</li>
+                <li><strong>许可证管理</strong>：在「设置」→「许可证」中可查看激活状态、到期时间和管理许可证</li>
+              </ul>
+            </div>
+          </section>
+
+          <section class="settings-card">
+            <div class="card-header">
+              <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                <polyline points="22,6 12,13 2,6"/>
+              </svg>
+              <h3>联系我们</h3>
+            </div>
+            <div class="card-body">
+              <p class="guide-text">
+                如有任何问题，请通过微信联系：
+              </p>
+              <div class="guide-contact">
+                <span class="contact-icon">💬</span>
+                <span class="contact-label">微信：</span>
+                <span class="contact-value">13213181166</span>
+              </div>
+              <p class="guide-hint" style="margin-top: 12px;">
+                本软件已预装 MiniMax 大模型，开箱即用。如需使用其他模型或自己的 API Key，可在设置中配置。
+              </p>
+            </div>
+          </section>
         </div>
       </div>
 
@@ -458,14 +493,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { getVersion } from '@tauri-apps/api/app'
 
 // ============ State ============
-type View = 'chat-launch' | 'settings' | 'dashboard-launch'
-const currentView = ref<View>('dashboard-launch')
+type View = 'chat' | 'dashboard' | 'guide' | 'settings'
+const currentView = ref<View>('guide')
 const appVersion = ref('1.0.3')
 
-// Dashboard
-const launchState = ref<'idle' | 'launching' | 'started' | 'error'>('idle')
+// URLs (filled by invoke calls)
+const chatUrl = ref('http://127.0.0.1:9122')
 const dashboardUrl = ref('http://127.0.0.1:9119')
-const launchError = ref('')
 
 // License
 const machineCode = ref('')
@@ -481,7 +515,7 @@ const licenseInfo = ref({
   license_key: '',
 })
 
-// ============ Dashboard ============
+// ============ Toast ============
 const toast = ref({ show: false, message: '', type: 'info' as 'success' | 'error' | 'info' })
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -519,19 +553,6 @@ const envStatus = ref({
 })
 
 // ============ Computed ============
-const licenseClass = computed(() => {
-  if (!licenseInfo.value.activated) return 'inactive'
-  if (licenseInfo.value.days_left <= 0) return 'expired'
-  if (licenseInfo.value.days_left < 30) return 'expiring'
-  return 'active'
-})
-
-const licenseText = computed(() => {
-  if (!licenseInfo.value.activated) return '未激活'
-  if (licenseInfo.value.days_left <= 0) return '已过期'
-  return `已激活 · ${licenseInfo.value.days_left} 天`
-})
-
 const envReady = computed(() => envStatus.value.ready)
 
 // ============ License ============
@@ -598,41 +619,31 @@ async function copyMachineCode() {
   }
 }
 
-// ============ Dashboard ============
-async function launchDashboard() {
-  launchState.value = 'launching'
-  launchError.value = ''
-  currentView.value = 'dashboard-launch'
+// ============ View Navigation ============
+async function openChatView() {
+  currentView.value = 'chat'
   try {
-    const result: any = await invoke('open_management_backend')
-    if (result.success) {
-      dashboardUrl.value = result.url
-      launchState.value = 'started'
-    } else {
-      throw new Error(result.message || '启动失败')
+    const result: any = await invoke('open_chat_window')
+    if (result.url) {
+      chatUrl.value = result.url
     }
   } catch (e: any) {
-    launchState.value = 'error'
-    launchError.value = e.toString()
+    showToast('启动对话失败: ' + e, 'error')
+    currentView.value = 'guide'
   }
 }
 
-async function openChatWindow() {
+async function openDashboardView() {
+  currentView.value = 'dashboard'
   try {
-    await invoke('open_chat_window')
-    currentView.value = 'chat-launch'
+    const result: any = await invoke('open_management_backend')
+    if (result.url) {
+      dashboardUrl.value = result.url
+    }
   } catch (e: any) {
-    showToast('打开对话窗口失败: ' + e, 'error')
+    showToast('启动管理后台失败: ' + e, 'error')
+    currentView.value = 'guide'
   }
-}
-
-function openDashboardUrl() {
-  // 在 Tauri 中打开外部浏览器
-  import('@tauri-apps/plugin-opener').then(({ openUrl }) => {
-    openUrl(dashboardUrl.value)
-  }).catch(() => {
-    window.open(dashboardUrl.value, '_blank')
-  })
 }
 
 // ============ Settings ============
@@ -975,80 +986,22 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.license-status {
-  display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-}
-
-.license-status.active {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.license-status.expiring {
-  background: var(--warn-bg);
-  color: var(--warn);
-}
-
-.license-status.inactive {
-  background: var(--error-bg);
-  color: var(--error);
-}
-
-.license-status.expired {
-  background: var(--error-bg);
-  color: var(--error);
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  flex-shrink: 0;
 }
 
 .license-warning {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--warn);
   text-align: center;
+  padding: 4px 8px;
+  background: var(--warn-bg);
+  border-radius: var(--radius-sm);
 }
 
-.env-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.sidebar-version {
   font-size: 11px;
   color: var(--text-muted);
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-card);
-}
-
-.env-indicator.ready {
-  color: var(--success);
-}
-
-.env-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--text-muted);
-}
-
-.env-indicator.ready .env-dot {
-  background: var(--success);
-  box-shadow: 0 0 4px rgba(74, 222, 128, 0.5);
-}
-
-.env-label {
-  white-space: nowrap;
+  font-family: var(--font-mono);
 }
 
 /* ============ Main Content ============ */
@@ -2043,88 +1996,123 @@ html, body {
   flex-shrink: 0;
 }
 
-/* ============ Dashboard Launch ============ */
-.launch-status {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  margin-top: 16px;
+/* ============ Iframe View ============ */
+.iframe-view {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
 }
 
-.launch-spinner {
-  width: 48px;
-  height: 48px;
-  border: 4px solid var(--border);
-  border-top-color: var(--gold);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+.app-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
 }
 
-.launch-success-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: var(--success-bg);
-  border: 2px solid var(--success);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  color: var(--success);
+/* ============ Guide Page ============ */
+.guide-grid {
+  max-width: 700px;
 }
 
-.launch-error-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: var(--error-bg);
-  border: 2px solid var(--error);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-  color: var(--error);
-}
-
-.launch-url {
-  font-family: var(--font-mono);
+.guide-text {
   font-size: 14px;
-  color: var(--gold);
+  line-height: 1.7;
+  color: var(--text-primary);
 }
 
-.launch-url a {
-  color: var(--gold);
-  text-decoration: underline;
-}
-
-.launch-error-msg {
-  color: var(--error);
-  font-size: 13px;
-  max-width: 400px;
-  text-align: center;
-  word-break: break-all;
-}
-
-.launch-hint {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.launch-actions {
+.guide-flow {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 16px;
-  margin-top: 16px;
 }
 
-.launch-desc {
+.guide-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.guide-step-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 215, 0, 0.1);
+  border: 1px solid rgba(255, 215, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold);
+  flex-shrink: 0;
+}
+
+.guide-step strong {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+
+.guide-hint {
   font-size: 13px;
   color: var(--text-secondary);
-  text-align: center;
-  max-width: 400px;
+  line-height: 1.5;
+}
+
+.guide-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.guide-list li {
+  font-size: 13px;
   line-height: 1.6;
+  color: var(--text-secondary);
+  padding-left: 16px;
+  position: relative;
+}
+
+.guide-list li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--gold);
+}
+
+.guide-list li strong {
+  color: var(--text-primary);
+}
+
+.guide-contact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.contact-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.contact-label {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.contact-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--gold);
 }
 
 .launch-btn {
