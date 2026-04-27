@@ -32,62 +32,96 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # Install sshpass on Windows runner
-      - name: Install sshpass
-        run: choco install sshpass -y
+      # Download Hermes Agent runtime
+      - name: Download Hermes Agent runtime
         shell: pwsh
-
-      # Package Hermes runtime on HK relay server (reliable network)
-      - name: Package Hermes workspace
         run: |
-          HK="ubuntu@43.128.59.90"
-          PWD='Yanmei84315!'
-          echo "Starting packaging on HK relay..."
+          echo "Downloading hermes-agent.zip..."
+          $bytes = Invoke-WebRequest -Uri "http://175.27.242.158:5000/download/hermes-agent.zip" `
+            -TimeoutSec 200 -UseBasicParsing -PassThru
 
-          sshpass -p "$PWD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 $HK bash << 'REMOTE'
-set -e
-cd ~/hermes-build && rm -rf hermes-agent hermes-workspace hermes-agent.zip 2>/dev/null || true
+          if ($bytes.Length -lt 1000000) {
+            Write-Output "Download too small or failed: $($bytes.Length) bytes"
+            exit 1
+          }
+          Write-Output "Downloaded: $([math]::Round($bytes.Length/1MB,1)) MB"
+          [System.IO.File]::WriteAllBytes("$env:TEMP\hermes-agent-raw.zip", $bytes.Content)
 
-echo "Downloading hermes-agent.zip..."
-curl -sL --max-time 180 http://175.27.242.158:5000/download/hermes-agent.zip -o hermes-agent.zip
-if [ ! -f hermes-agent.zip ] || [ \$(stat -c%s hermes-agent.zip) -lt 1000000 ]; then
-  echo "Download failed or file too small: \$(du -sh hermes-agent.zip 2>/dev/null || echo 'N/A')"
-  exit 1
-fi
-echo "Downloaded: \$(du -sh hermes-agent.zip)"
+          # Extract hermes-agent
+          echo "Extracting hermes-agent..."
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          if (Test-Path "$env:TEMP\hermes-bundle") { Remove-Item "$env:TEMP\hermes-bundle" -Recurse -Force }
+          New-Item -ItemType Directory -Force "$env:TEMP\hermes-bundle" | Out-Null
 
-echo "Cloning hermes-workspace..."
-git clone --depth 1 https://github.com/nesquena/hermes-webui.git
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("$env:TEMP\hermes-agent-raw.zip")
+          $zip.ExtractToDirectory("$env:TEMP\hermes-bundle")
+          $zip.Dispose()
 
-echo "Extracting hermes-agent..."
-python3 -c "import zipfile; zipfile.ZipFile('hermes-agent.zip').extractall()"
-if [ ! -d hermes-agent ]; then echo "ERROR: hermes-agent missing"; ls; exit 1; fi
-echo "Structure: \$(ls)"
+          # Determine top-level dir name in zip
+          $topLevel = (Get-ChildItem "$env:TEMP\hermes-bundle" -Directory | Select-Object -First 1).Name
+          $agentSrc = "$env:TEMP\hermes-bundle\$topLevel"
 
-echo "Building dashboard..."
-cd hermes-agent/web && npm ci && npm run build && cd ..
-if [ -d web/dist ]; then mv web/dist web_dist; elif [ -d web/build ]; then mv web/build web_dist; fi
-echo "Dashboard built"
+          if (-not (Test-Path "$agentSrc\web")) {
+            Write-Output "ERROR: web dir missing in hermes-agent"
+            exit 1
+          }
 
-if [ ! -d hermes-agent ] || [ ! -d hermes-workspace ]; then echo "ERROR: dirs missing"; exit 1; fi
+          # Build dashboard web_dist from hermes-agent
+          echo "Building dashboard..."
+          Push-Location "$agentSrc\web"
+          npm ci
+          npm run build
+          Pop-Location
 
-echo "Packaging..."
-rm -f hermes-agent.zip
-python3 -c "
-import zipfile, os
-with zipfile.ZipFile('hermes-agent.zip','w',zipfile.ZIP_DEFLATED) as zf:
-    for r,ds,fs in os.walk('.'):
-        for f in fs:
-            fp=os.path.join(r,f)
-            zf.write(fp,fp[2:])
-print('Done:', round(os.path.getsize('hermes-agent.zip')/1024/1024,1),'MB')
-"
-ls -lh hermes-agent.zip
-REMOTE
+          if (Test-Path "$agentSrc\web\dist") {
+            Move-Item "$agentSrc\web\dist" "$agentSrc\web_dist" -Force
+          } elseif (Test-Path "$agentSrc\web\build") {
+            Move-Item "$agentSrc\web\build" "$agentSrc\web_dist" -Force
+          }
+          echo "Dashboard built"
 
-          echo "Transferring to runner..."
-          sshpass -p "$PWD" scp -o StrictHostKeyChecking=no -o ConnectTimeout=60 "$HK:~/hermes-build/hermes-agent.zip" src-tauri/
-          echo "Done: \$(du -sh src-tauri/hermes-agent.zip)"
+          # Clone and build hermes-workspace (AI chat interface)
+          echo "Cloning hermes-workspace..."
+          $wsDir = "$env:TEMP\hermes-workspace"
+          if (Test-Path $wsDir) { Remove-Item $wsDir -Recurse -Force }
+          git clone --depth 1 https://github.com/NousResearch/hermes-webui.git $wsDir 2>&1 | Out-Null
+
+          if (-not (Test-Path "$wsDir\bootstrap.py")) {
+            Write-Output "ERROR: bootstrap.py not found in hermes-workspace"
+            exit 1
+          }
+
+          # Build hermes-workspace web (vanilla JS, no build needed but verify structure)
+          if (Test-Path "$wsDir\web\package.json") {
+            Push-Location "$wsDir\web"
+            npm ci
+            npm run build
+            Pop-Location
+            if (Test-Path "$wsDir\web\dist") {
+              Move-Item "$wsDir\web\dist" "$wsDir\web_dist" -Force
+            } elseif (Test-Path "$wsDir\web\build") {
+              Move-Item "$wsDir\web\build" "$wsDir\web_dist" -Force
+            }
+            echo "Hermes-workspace built"
+          }
+
+          # Put hermes-workspace as SIBLING of hermes-agent inside the final bundle dir
+          # Final structure: hermes-final/hermes-agent/ + hermes-final/hermes-workspace/
+          New-Item -ItemType Directory -Force "$env:TEMP\hermes-final" | Out-Null
+          Move-Item $agentSrc "$env:TEMP\hermes-final\hermes-agent" -Force
+          Move-Item $wsDir "$env:TEMP\hermes-final\hermes-workspace" -Force
+
+          # Repackage hermes-agent.zip
+          echo "Repackaging hermes-agent.zip..."
+          if (Test-Path "src-tauri\hermes-agent.zip") { Remove-Item "src-tauri\hermes-agent.zip" -Force }
+          [System.IO.Compression.ZipFile]::CreateFromDirectory("$env:TEMP\hermes-final", "src-tauri\hermes-agent.zip", 'Optimal')
+          Write-Output "Package ready: $([math]::Round((Get-Item src-tauri\hermes-agent.zip).Length/1MB,1)) MB"
+
+          # Cleanup
+          Remove-Item "$env:TEMP\hermes-agent-raw.zip" -Force -EA SilentlyContinue
+          Remove-Item "$env:TEMP\hermes-bundle" -Recurse -Force -EA SilentlyContinue
+          Remove-Item "$env:TEMP\hermes-final" -Recurse -Force -EA SilentlyContinue
+          echo "Done"
 
       # Rust cache
       - name: Rust cache
@@ -198,10 +232,11 @@ REMOTE
       - name: Install frontend deps
         run: npm ci
 
+      # macOS compile check: download raw hermes-agent.zip (no repackaging needed)
       - name: Download Hermes Agent runtime
         run: |
           if [ -f src-tauri/hermes-agent.zip ]; then
-            echo "hermes-agent.zip already exists in checkout, skipping download"
+            echo "hermes-agent.zip already exists in checkout"
           else
             for i in 1 2 3; do
               echo "Download attempt $i/3..."
@@ -210,10 +245,6 @@ REMOTE
                 http://175.27.242.158:5000/download/hermes-agent.zip && break
               sleep 10
             done
-            if [ ! -f src-tauri/hermes-agent.zip ]; then
-              echo "Failed to download hermes-agent.zip after 3 attempts"
-              exit 1
-            fi
           fi
         shell: bash
 

@@ -9,7 +9,6 @@ use std::process::{Child, Stdio};
 use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 use futures_util::StreamExt;
-use zip::ZipArchive;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -1291,19 +1290,24 @@ fn check_node_installed() -> Option<String> {
 #[tauri::command]
 async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let data_dir = get_data_dir()?;
-    let extract_dir = data_dir.join("hermes-agent");
     let zip_path = data_dir.join("hermes-agent.zip");
 
+    // 检查是否已解压（hermes-agent 目录存在则跳过）
+    let hermes_check = data_dir.join("hermes-agent").join("hermes");
+    if hermes_check.exists() {
+        return Ok(serde_json::json!({
+            "success": true,
+            "message": "运行环境已就绪",
+            "path": hermes_check.to_string_lossy().to_string(),
+        }));
+    }
+
     // Step 1: 获取 zip 文件
-    // 安装后默认在 exe 同目录下，也检查 resource_dir
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
-
-    let resource_dir = app_handle.path()
-        .resource_dir()
-        .unwrap_or_default();
+    let resource_dir = app_handle.path().resource_dir().unwrap_or_default();
 
     let builtin_paths = [
         exe_dir.join("hermes-agent.zip"),
@@ -1313,75 +1317,55 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     let bytes = if let Some(path) = builtin_paths.iter().find(|p| p.exists()) {
         std::fs::read(path).map_err(|e| format!("读取内置安装包失败: {}", e))?
     } else {
-        // 从南京云服务器下载（便携版或开发环境）
         let download_url = "http://175.27.242.158:5000/download/hermes-agent.zip";
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| format!("HTTP client error: {}", e))?;
-
-        let response = client
-            .get(download_url)
-            .send()
-            .await
+        let response = client.get(download_url).send().await
             .map_err(|e| format!("下载 Hermes Agent 失败: {}", e))?;
-
         if !response.status().is_success() {
             return Err(format!("服务器返回错误: {}", response.status()));
         }
-
-        response
-            .bytes()
-            .await
-            .map_err(|e| format!("读取下载数据失败: {}", e))?
-            .to_vec()
+        response.bytes().await.map_err(|e| format!("读取下载数据失败: {}", e))?.to_vec()
     };
 
-    // 写入临时文件
     std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
 
-    // Step 2: 解压
-    let extract_result = {
-        #[cfg(target_os = "windows")]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            std::process::Command::new("powershell")
-                .arg("-NoProfile")
-                .arg("-Command")
-                .arg(format!(
-                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                    zip_path.to_string_lossy(),
-                    extract_dir.to_string_lossy()
-                ))
-                .creation_flags(CREATE_NO_WINDOW)
-                .output()
-                .map_err(|e| format!("解压失败: {}", e))?
+    // Step 2: 解压到 data_dir（zip 顶层含 hermes-agent/ 和 hermes-workspace/）
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let result = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &format!(
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                zip_path.to_string_lossy(),
+                data_dir.to_string_lossy()
+            )])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("解压失败: {}", e))?;
+        if !result.status.success() {
+            return Err(format!("解压失败: {}", decode_output(&result.stderr)));
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            std::process::Command::new("unzip")
-                .arg("-o")
-                .arg(zip_path.to_string_lossy().to_string())
-                .arg("-d")
-                .arg(extract_dir.to_string_lossy().to_string())
-                .output()
-                .map_err(|e| format!("解压失败: {}", e))?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let result = std::process::Command::new("unzip")
+            .args(["-o", &zip_path.to_string_lossy(), "-d", &data_dir.to_string_lossy()])
+            .output()
+            .map_err(|e| format!("解压失败: {}", e))?;
+        if !result.status.success() {
+            return Err(format!("解压失败: {}", decode_output(&result.stderr)));
         }
-    };
-
-    if !extract_result.status.success() {
-        let stderr = decode_output(&extract_result.stderr);
-        return Err(format!("解压失败: {}", stderr));
     }
 
-    // 验证解压后的入口文件
-    let hermes_script = extract_dir.join("hermes");
-    if !hermes_script.exists() {
+    std::fs::remove_file(&zip_path).ok();
+
+    // 验证入口文件
+    if !hermes_check.exists() {
         return Err("解压完成但未找到 hermes 入口文件".to_string());
     }
-
-    // 删除 zip 文件
-    std::fs::remove_file(&zip_path).ok();
 
     // Step 3: 安装 Python 依赖
     let python = find_hermes_python()?;
@@ -1396,9 +1380,10 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     pip_upgrade.output().ok();
 
     // 安装 Hermes Agent（静默）
+    let hermes_agent_dir = data_dir.join("hermes-agent");
     let mut install = new_python_cmd(&python);
     install.arg("-m").arg("pip").arg("install")
-        .arg(extract_dir.to_string_lossy().to_string());
+        .arg(hermes_agent_dir.to_string_lossy().to_string());
     #[cfg(target_os = "windows")]
     install.creation_flags(0x08000000);
     let install_result = install.output()
@@ -1439,7 +1424,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     Ok(serde_json::json!({
         "success": true,
         "message": "环境安装成功",
-        "path": hermes_script.to_string_lossy().to_string(),
+        "path": hermes_check.to_string_lossy().to_string(),
     }))
 }
 
@@ -2074,7 +2059,7 @@ async fn hermes_chat_send(message: String, app_handle: tauri::AppHandle) -> Resu
 }
 
 /// 确保 Hermes WebUI（vanilla JS 对话界面）正在运行（端口 9122）
-/// 使用 bootstrap.py 启动，与 hermes-agent 同级目录结构
+/// hermes-agent.zip 打包了 hermes-agent/ 和 hermes-workspace/ 两个同级目录
 async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, String> {
     const WEBUI_PORT: u16 = 9122;
     let url = format!("http://127.0.0.1:{WEBUI_PORT}");
@@ -2090,74 +2075,70 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     }
 
     let data_dir = get_data_dir()?;
-    let workspace_dir = data_dir.join("hermes-workspace");
-    let agent_dir = data_dir.join("hermes-agent");
-    let bootstrap_script = workspace_dir.join("bootstrap.py");
 
-    // 如果 hermes-workspace 尚未提取，从 hermes-agent.zip 解压
-    if !bootstrap_script.exists() {
+    // 确保 hermes-agent.zip 已解压（包含 hermes-agent/ 和 hermes-workspace/ 同级目录）
+    let agent_exe = find_hermes_agent()?;
+    let agent_dir = agent_exe.parent().ok_or("无法获取 Hermes Agent 目录")?;
+    let webui_dir = agent_dir.parent().map(|p| p.join("hermes-workspace"));
+
+    // 如果 hermes-workspace 不存在，说明未解压，从 resources 解压
+    if webui_dir.as_ref().map(|p| !p.exists()).unwrap_or(true) {
+        // 找 hermes-agent.zip
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
         let resource_dir = app_handle.path().resource_dir().unwrap_or_default();
-
-        let zip_candidates = [
+        let zip_paths = [
             exe_dir.join("hermes-agent.zip"),
             resource_dir.join("hermes-agent.zip"),
-            PathBuf::from("src-tauri/hermes-agent.zip"),
         ];
+        let zip_path = zip_paths.iter().find(|p| p.exists())
+            .ok_or("未找到 hermes-agent.zip 安装包")?;
 
-        let zip_path = zip_candidates
-            .iter()
-            .find(|p| p.exists())
-            .ok_or("未找到 hermes-agent.zip 资源文件")?;
-
-        // 使用 Rust zip 库解压，确保 hermes-agent/ 和 hermes-workspace/ 在 data_dir 下平铺
-        let file = std::fs::File::open(zip_path)
-            .map_err(|e| format!("打开 hermes-agent.zip 失败: {}", e))?;
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|e| format!("解析 hermes-agent.zip 失败: {}", e))?;
-
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)
-                .map_err(|e| format!("读取 zip 内文件失败: {}", e))?;
-            let outpath = {
-                let path = file.enclosed_name()
-                    .ok_or("zip 条目路径无效")?
-                    .clone();
-                // 去掉最外层 "hermes-agent/" 或 "hermes-workspace/" 前缀
-                // zip 内结构: hermes-agent/hermes-agent/... 和 hermes-workspace/...
-                // 我们要把 hermes-agent 和 hermes-workspace 都提取到 data_dir 下
-                let parts: std::path::PathBuf = path.iter()
-                    .skip(1)  // 去掉最外层 hermes-agent/
-                    .collect();
-                data_dir.join(parts)
-            };
-            if outpath.to_string_lossy().ends_with('/') {
-                std::fs::create_dir_all(&outpath).ok();
-            } else {
-                if let Some(p) = outpath.parent() {
-                    std::fs::create_dir_all(p).ok();
-                }
-                let mut outfile = std::fs::File::create(&outpath)
-                    .map_err(|e| format!("创建解压文件 {:?} 失败: {}", outpath, e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("写入解压文件失败: {}", e))?;
-            }
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    zip_path.to_string_lossy(),
+                    data_dir.to_string_lossy()
+                )])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| format!("解压 hermes-agent.zip 失败: {}", e))?;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("unzip")
+                .args(["-o", &zip_path.to_string_lossy(), "-d", &data_dir.to_string_lossy()])
+                .output()
+                .map_err(|e| format!("解压 hermes-agent.zip 失败: {}", e))?;
         }
     }
 
-    if !bootstrap_script.exists() {
-        return Err("解压后未找到 hermes-workspace/bootstrap.py".to_string());
+    // 重新定位 hermes-agent 和 hermes-workspace
+    let agent_exe = find_hermes_agent()?;
+    let agent_dir = agent_exe.parent().ok_or("无法获取 Hermes Agent 目录")?;
+    let webui_dir = agent_dir.parent()
+        .map(|p| p.join("hermes-workspace"))
+        .ok_or("无法定位 hermes-workspace 目录")?;
+
+    let bootstrap_py = webui_dir.join("bootstrap.py");
+    if !bootstrap_py.exists() {
+        return Err("未找到 hermes-workspace/bootstrap.py".to_string());
     }
 
     // 用 hermes-agent 的 venv Python 运行 bootstrap.py
-    let agent_venv_python = agent_dir
-        .join(if cfg!(target_os = "windows") { "venv\\Scripts\\python.exe" } else { "venv/bin/python" });
-    if !agent_venv_python.exists() {
-        return Err("未找到 Hermes Agent 的 Python 环境".to_string());
-    }
+    let venv_python = agent_dir.join(
+        if cfg!(target_os = "windows") { "venv\\Scripts\\python.exe" } else { "venv/bin/python" }
+    );
+    let python = if venv_python.exists() {
+        venv_python.clone()
+    } else {
+        find_hermes_python()?
+    };
 
     let config = AppConfig::load()?;
     let api_key = config.effective_api_key();
@@ -2167,17 +2148,18 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     let log_file = std::fs::File::create(&log_path)
         .map_err(|e| format!("创建 WebUI 日志文件失败: {}", e))?;
 
-    // bootstrap.py 会自动找到同级的 hermes-agent/
-    let mut cmd = std::process::Command::new(&agent_venv_python);
-    cmd.arg(&bootstrap_script)
+    // bootstrap.py 从 webui_dir 运行，discovery 逻辑自动找到同级的 hermes-agent/
+    let mut cmd = std::process::Command::new(&python);
+    cmd.arg(&bootstrap_py)
         .arg("--port").arg(WEBUI_PORT.to_string())
         .arg("--no-browser")
         .env("HERMES_WEBUI_HOST", "127.0.0.1")
-        .env("HERMES_WEBUI_AGENT_DIR", &agent_dir)
+        .env("HERMES_WEBUI_AGENT_DIR", agent_dir.to_string_lossy().as_ref())
         .env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
         .env("PYTHONUNBUFFERED", "1")
-        .stdout(std::process::Stdio::null())
+        .current_dir(&webui_dir)
+        .stdout(Stdio::null())
         .stderr(log_file);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
@@ -2188,7 +2170,6 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     for i in 0..15 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        // 检查进程是否已退出
         match child.try_wait() {
             Ok(Some(status)) => {
                 let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -2206,9 +2187,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
                 ));
             }
             Ok(None) => {} // 仍在运行
-            Err(e) => {
-                return Err(format!("检查 WebUI 进程状态失败: {}", e));
-            }
+            Err(e) => return Err(format!("检查 WebUI 进程状态失败: {}", e)),
         }
 
         if client.get(&url).send().await.is_ok() {
@@ -2216,7 +2195,6 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         }
     }
 
-    // 超时——读取日志帮助诊断
     let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
     let trimmed = stderr_log.trim();
     let detail = if trimmed.is_empty() {
