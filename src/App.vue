@@ -481,6 +481,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { check } from '@tauri-apps/plugin-updater'
+import { relaunch } from '@tauri-apps/plugin-process'
 
 // ============ State ============
 type View = 'chat' | 'dashboard' | 'guide' | 'settings'
@@ -714,10 +716,61 @@ async function setupNodejs() {
   }
 }
 
+// ============ Update ============
+const updateInfo = ref<{
+  available: boolean
+  version: string
+  body: string
+  downloadAndInstall: () => Promise<void>
+} | null>(null)
+const isUpdating = ref(false)
+
+async function checkForUpdates() {
+  try {
+    const update = await check()
+    if (update?.available) {
+      updateInfo.value = {
+        available: true,
+        version: update.version,
+        body: update.body || '',
+        downloadAndInstall: () => update.downloadAndInstall(),
+      }
+      showUpdateDialog()
+    }
+  } catch (e) {
+    console.error('更新检查失败:', e)
+  }
+}
+
+function showUpdateDialog() {
+  // 使用原生 confirm，更简单可靠
+  const info = updateInfo.value
+  if (!info) return
+  const msg = `发现新版本 v${info.version}\n\n${info.body ? '更新内容：\n' + info.body + '\n\n' : ''}是否现在下载更新？`
+  if (confirm(msg)) {
+    downloadUpdate()
+  }
+}
+
+async function downloadUpdate() {
+  if (!updateInfo.value) return
+  isUpdating.value = true
+  try {
+    await updateInfo.value.downloadAndInstall()
+    showToast('更新下载完成，正在重启...', 'success')
+    await relaunch()
+  } catch (e: any) {
+    showToast('更新失败: ' + e, 'error')
+  } finally {
+    isUpdating.value = false
+  }
+}
+
 // ============ Init ============
 onMounted(async () => {
   await Promise.all([loadLicenseInfo(), loadApiConfig()])
   checkEnvironment()
+  checkForUpdates()
 })
 </script>
 

@@ -2234,6 +2234,8 @@ fn main() {
         .manage(HermesChatState::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::init())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             get_machine_code,
             get_license_status,
