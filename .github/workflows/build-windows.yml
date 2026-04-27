@@ -32,81 +32,62 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # Download bundled Hermes Agent runtime resources (with retries)
-      - name: Download Hermes Agent runtime
-        run: |
-          if [ -f src-tauri/hermes-agent.zip ]; then
-            echo "hermes-agent.zip already exists in checkout, skipping download"
-          else
-            for i in 1 2 3; do
-              echo "Download attempt $i/3..."
-              curl -L --connect-timeout 30 --max-time 120 \
-                -o src-tauri/hermes-agent.zip \
-                http://175.27.242.158:5000/download/hermes-agent.zip && break
-              sleep 10
-            done
-            if [ ! -f src-tauri/hermes-agent.zip ]; then
-              echo "Failed to download hermes-agent.zip after 3 attempts"
-              exit 1
-            fi
-          fi
-        shell: bash
-
-      # Clone hermes-workspace and combine with hermes-agent (sibling layout)
-      # bootstrap.py needs hermes-agent and hermes-workspace as sibling dirs
-      - name: Package Hermes workspace
+      # Install sshpass on Windows runner
+      - name: Install sshpass
+        run: choco install sshpass -y
         shell: pwsh
+
+      # Package Hermes runtime on HK relay server (reliable network)
+      - name: Package Hermes workspace
         run: |
-          $zipPath = "$env:GITHUB_WORKSPACE\src-tauri\hermes-agent.zip"
-          $tempDir = "$env:TEMP\hermes-package"
+          HK="ubuntu@43.128.59.90"
+          PWD='Yanmei84315!'
+          echo "Starting packaging on HK relay..."
 
-          # 1. 创建根目录
-          if (-not (Test-Path "$tempDir")) { New-Item -ItemType Directory -Force -Path "$tempDir" | Out-Null }
+          sshpass -p "$PWD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 $HK bash << 'REMOTE'
+set -e
+cd ~/hermes-build && rm -rf hermes-agent hermes-workspace hermes-agent.zip 2>/dev/null || true
 
-          # 2. 解压 hermes-agent
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-          [System.IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $tempDir)
-          $zip.Dispose()
-          $agentDir = "$tempDir\hermes-agent"
-          Write-Output "hermes-agent extracted to $agentDir"
+echo "Downloading hermes-agent.zip..."
+curl -sL --max-time 180 http://175.27.242.158:5000/download/hermes-agent.zip -o hermes-agent.zip
+if [ ! -f hermes-agent.zip ] || [ \$(stat -c%s hermes-agent.zip) -lt 1000000 ]; then
+  echo "Download failed or file too small: \$(du -sh hermes-agent.zip 2>/dev/null || echo 'N/A')"
+  exit 1
+fi
+echo "Downloaded: \$(du -sh hermes-agent.zip)"
 
-          # 3. 构建管理后台 React 前端（web_dist/）
-          Write-Output "Building dashboard web UI..."
-          Push-Location "$agentDir\web"
-          npm ci
-          npm run build
-          Pop-Location
-          # hermes_cli.main dashboard 从 web_dist/ 读取静态文件
-          Move-Item "$agentDir\web\dist" "$agentDir\web_dist" -Force
-          Write-Output "Dashboard built"
+echo "Cloning hermes-workspace..."
+git clone --depth 1 https://github.com/nesquena/hermes-webui.git
 
-          # 4. 克隆 hermes-workspace
-          $wsDir = "$tempDir\hermes-workspace"
-          if (-not (Test-Path $wsDir)) {
-            git clone --depth 1 https://github.com/nesquena/hermes-webui.git $wsDir
-            Write-Output "hermes-workspace cloned"
-          }
+echo "Extracting hermes-agent..."
+python3 -c "import zipfile; zipfile.ZipFile('hermes-agent.zip').extractall()"
+if [ ! -d hermes-agent ]; then echo "ERROR: hermes-agent missing"; ls; exit 1; fi
+echo "Structure: \$(ls)"
 
-          # 5. 验证同级目录结构
-          Write-Output "Contents: $(Get-ChildItem $tempDir -Name -Directory)"
-          $expected = @("hermes-agent", "hermes-workspace")
-          foreach ($d in $expected) {
-            if (-not (Test-Path "$tempDir\$d")) {
-              Write-Output "ERROR: Missing $d in $tempDir"
-              exit 1
-            }
-          }
-          Write-Output "Sibling structure verified"
+echo "Building dashboard..."
+cd hermes-agent/web && npm ci && npm run build && cd ..
+if [ -d web/dist ]; then mv web/dist web_dist; elif [ -d web/build ]; then mv web/build web_dist; fi
+echo "Dashboard built"
 
-          # 6. 打包成新的 hermes-agent.zip
-          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-          [System.IO.Compression.ZipFile]::CreateFromDirectory($tempDir, $zipPath, 'Optimal')
-          Write-Output "Combined zip created: $((Get-Item $zipPath).Length / 1MB) MB"
+if [ ! -d hermes-agent ] || [ ! -d hermes-workspace ]; then echo "ERROR: dirs missing"; exit 1; fi
 
-          # 清理
-          Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-          Write-Output "Packaging complete"
+echo "Packaging..."
+rm -f hermes-agent.zip
+python3 -c "
+import zipfile, os
+with zipfile.ZipFile('hermes-agent.zip','w',zipfile.ZIP_DEFLATED) as zf:
+    for r,ds,fs in os.walk('.'):
+        for f in fs:
+            fp=os.path.join(r,f)
+            zf.write(fp,fp[2:])
+print('Done:', round(os.path.getsize('hermes-agent.zip')/1024/1024,1),'MB')
+"
+ls -lh hermes-agent.zip
+REMOTE
+
+          echo "Transferring to runner..."
+          sshpass -p "$PWD" scp -o StrictHostKeyChecking=no -o ConnectTimeout=60 "$HK:~/hermes-build/hermes-agent.zip" src-tauri/
+          echo "Done: \$(du -sh src-tauri/hermes-agent.zip)"
 
       # Rust cache
       - name: Rust cache
