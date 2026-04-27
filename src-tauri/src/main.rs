@@ -2176,7 +2176,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         // 确保 hermes_cli、run_agent.py 等始终可导入
         .env("PYTHONPATH", format!("{}{}{}",
             agent_dir.to_string_lossy(),
-            std::env::consts::PATH_SEPARATOR,
+            if cfg!(target_os = "windows") { ";" } else { ":" },
             webui_extract_dir.to_string_lossy()))
         .env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
