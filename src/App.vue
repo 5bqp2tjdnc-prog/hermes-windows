@@ -10,7 +10,6 @@
             <span class="logo-subtitle">Agent</span>
           </div>
         </div>
-        <span class="version-tag">v{{ appVersion }}</span>
       </div>
 
       <nav class="sidebar-nav">
@@ -130,9 +129,6 @@
             <div class="card-body">
               <p class="guide-text">
                 Hermes Agent 是一款基于 MiniMax M2.7 大模型的 AI 助手软件。支持联网搜索、工具调用和任务执行，提供完整的 AI 对话体验。
-              </p>
-              <p class="guide-text" style="margin-top: 12px;">
-                本软件内置了 MiniMax M2.7-HighSpeed 大模型，开箱即用，无需额外配置 API Key。
               </p>
             </div>
           </section>
@@ -485,13 +481,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { getVersion } from '@tauri-apps/api/app'
 
 // ============ State ============
 type View = 'chat' | 'dashboard' | 'guide' | 'settings'
 const currentView = ref<View>('guide')
-const appVersion = ref('1.0.3')
-
 // URLs (filled by invoke calls)
 const chatUrl = ref('http://127.0.0.1:9122')
 const dashboardUrl = ref('http://127.0.0.1:9119')
@@ -723,9 +716,6 @@ async function setupNodejs() {
 
 // ============ Init ============
 onMounted(async () => {
-  try {
-    appVersion.value = await getVersion()
-  } catch (_) { /* fallback to default */ }
   await Promise.all([loadLicenseInfo(), loadApiConfig()])
   checkEnvironment()
 })
@@ -926,14 +916,6 @@ html, body {
   letter-spacing: 1px;
 }
 
-.version-tag {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-card);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: var(--font-mono);
-}
 
 .sidebar-nav {
   flex: 1;
