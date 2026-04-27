@@ -2281,18 +2281,15 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
     }))
 }
 
-/// 启动 AI 对话 WebUI，返回 URL（内嵌显示，不弹窗）
-/// 使用 FastAPI/uvicorn 版本的聊天服务器（端口 9120），
-/// 与管理后台使用相同技术栈，比旧版 http.server 更稳定可靠
+/// 启动 AI 对话，内嵌完整的 Hermes WebUI，返回 URL
 #[tauri::command]
 async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let state = app_handle.state::<HermesChatState>();
-    let port = ensure_chat_server(&state, &app_handle).await?;
-    let chat_url = format!("http://127.0.0.1:{port}");
+    let port = ensure_webui_server(&app_handle).await?;
+    let webui_url = format!("http://127.0.0.1:{port}");
 
     Ok(serde_json::json!({
         "success": true,
-        "url": chat_url,
+        "url": webui_url,
     }))
 }
 
