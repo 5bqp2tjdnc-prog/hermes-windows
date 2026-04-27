@@ -2117,6 +2117,37 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
     }))
 }
 
+/// 在 WebView 窗口中打开 AI 对话
+#[tauri::command]
+async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri::WebviewWindowBuilder;
+
+    // 检查是否已有窗口
+    if let Some(window) = app_handle.get_webview_window("hermes-chat") {
+        window.set_focus().ok();
+        return Ok(serde_json::json!({"success": true}));
+    }
+
+    // 确保 Hermes 聊天服务正在运行
+    let state = app_handle.state::<HermesChatState>();
+    ensure_chat_server(&state, &app_handle).await?;
+
+    // 创建 WebView 窗口
+    let _window = WebviewWindowBuilder::new(
+        &app_handle,
+        "hermes-chat",
+        tauri::WebviewUrl::External("http://127.0.0.1:9120".parse().map_err(|_| "URL 格式错误")?),
+    )
+    .title("Hermes AI 对话")
+    .inner_size(800.0, 700.0)
+    .min_inner_size(600.0, 500.0)
+    .resizable(true)
+    .build()
+    .map_err(|e| format!("打开 AI 对话窗口失败: {}", e))?;
+
+    Ok(serde_json::json!({"success": true}))
+}
+
 // ============ Main ============
 
 fn main() {
@@ -2140,6 +2171,7 @@ fn main() {
             launch_dashboard,
             hermes_chat_send,
             open_management_backend,
+            open_chat_window,
             save_api_config,
             get_api_config,
             save_feishu_config,

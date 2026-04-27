@@ -16,8 +16,8 @@
       <nav class="sidebar-nav">
         <button
           class="nav-item"
-          :class="{ active: currentView === 'chat' }"
-          @click="currentView = 'chat'"
+          :class="{ active: currentView === 'chat-launch' }"
+          @click="openChatWindow"
         >
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
@@ -90,163 +90,34 @@
           </button>
         </div>
       </transition>
-      <!-- Chat View -->
-      <div v-if="currentView === 'chat'" class="chat-view">
-        <!-- Chat Header -->
+      <!-- Chat Launch View -->
+      <div v-if="currentView === 'chat-launch'" class="chat-view">
         <div class="chat-header">
           <div class="chat-header-left">
             <h2>
               <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
               </svg>
-              对话
+              AI 对话
             </h2>
           </div>
-          <div class="chat-header-right">
-            <span class="session-badge" v-if="sessionId" title="会话ID">
-              <svg class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                <polyline points="22,6 12,13 2,6"/>
-              </svg>
-              {{ sessionId.substring(0, 8) }}...
-            </span>
-            <span class="model-badge">{{ currentModel }}</span>
-            <button class="new-chat-btn" @click="newChat" title="新对话">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="12" y1="5" x2="12" y2="19"/>
-                <line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-            </button>
-          </div>
         </div>
-
-        <!-- Messages Area -->
-        <div class="chat-messages" ref="messagesContainer">
-          <!-- Welcome state -->
-          <div v-if="messages.length === 0" class="welcome-screen">
+        <div class="chat-messages">
+          <div class="welcome-screen">
             <div class="welcome-logo">
               <span class="welcome-caduceus">☤</span>
             </div>
-            <h2 class="welcome-title">Hermes Agent</h2>
-            <p class="welcome-desc">由 Nous Research 构建的 AI 智能体</p>
-            <div class="welcome-cards">
-              <div class="welcome-card">
-                <div class="card-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-                    <path d="M2 17l10 5 10-5"/>
-                    <path d="M2 12l10 5 10-5"/>
-                  </svg>
-                </div>
-                <span>150+ 工具</span>
-              </div>
-              <div class="welcome-card">
-                <div class="card-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                  </svg>
-                </div>
-                <span>技能系统</span>
-              </div>
-              <div class="welcome-card">
-                <div class="card-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/>
-                    <path d="M2 12h20"/>
-                    <path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
-                  </svg>
-                </div>
-                <span>多语言</span>
-              </div>
-              <div class="welcome-card">
-                <div class="card-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                    <path d="M7 11V7a5 5 0 0110 0v4"/>
-                  </svg>
-                </div>
-                <span>MCP 集成</span>
-              </div>
-            </div>
-            <p class="welcome-tip">输入消息开始与 Hermes Agent 对话</p>
-          </div>
-
-          <!-- Chat messages -->
-          <div
-            v-for="(msg, i) in messages"
-            :key="i"
-            class="message"
-            :class="msg.role"
-          >
-            <div class="msg-avatar">
-              <span v-if="msg.role === 'user'">👤</span>
-              <span v-else class="hermes-avatar">☤</span>
-            </div>
-            <div class="msg-body">
-              <div class="msg-name">{{ msg.role === 'user' ? '你' : 'Hermes' }}</div>
-              <div class="msg-content" v-if="msg.content">{{ msg.content }}</div>
-              <div v-if="msg.error" class="msg-error">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="15" y1="9" x2="9" y2="15"/>
-                  <line x1="9" y1="9" x2="15" y2="15"/>
+            <h2 class="welcome-title">Hermes AI 对话</h2>
+            <p class="welcome-desc">支持联网搜索、工具调用和任务执行</p>
+            <div class="launch-actions">
+              <p class="launch-desc">AI 对话已在新窗口中打开，支持联网搜索获取最新信息</p>
+              <button class="btn btn-primary launch-btn" @click="openChatWindow">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
                 </svg>
-                {{ msg.error }}
-              </div>
+                打开对话窗口
+              </button>
             </div>
-          </div>
-
-          <!-- Loading indicator -->
-          <div v-if="isLoading" class="message assistant">
-            <div class="msg-avatar">
-              <span class="hermes-avatar">☤</span>
-            </div>
-            <div class="msg-body">
-              <div class="msg-name">Hermes</div>
-              <div class="msg-content">
-                <!-- 流式输出日志（逐行思考过程） -->
-                <div class="streaming-log" v-if="streamingLines.length > 0">
-                  <div v-for="(line, i) in streamingLines" :key="i" class="stream-line">{{ line }}</div>
-                </div>
-                <!-- 启动阶段的状态提示 -->
-                <div v-else-if="loadingStatus" class="loading-status">{{ loadingStatus }}</div>
-                <div class="typing-indicator">
-                  <span></span><span></span><span></span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Chat Input -->
-        <div class="chat-input-area">
-          <div class="input-wrapper">
-            <textarea
-              v-model="inputText"
-              @keydown.enter.exact.prevent="sendMessage"
-              placeholder="向 Hermes 发送消息..."
-              rows="1"
-              :disabled="!canUseChat || isLoading"
-              ref="inputRef"
-            ></textarea>
-            <button
-              class="send-btn"
-              @click="sendMessage"
-              :disabled="!inputText.trim() || !canUseChat || isLoading"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="22" y1="2" x2="11" y2="13"/>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-              </svg>
-            </button>
-          </div>
-          <div v-if="!licenseInfo.activated" class="input-overlay">
-            <svg class="lock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-              <path d="M7 11V7a5 5 0 0110 0v4"/>
-            </svg>
-            <span>请先激活许可证</span>
-            <button class="goto-btn" @click="currentView = 'settings'">前往激活</button>
           </div>
         </div>
       </div>
@@ -587,8 +458,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
 // ============ State ============
-type View = 'chat' | 'settings' | 'dashboard-launch'
-const currentView = ref<View>('chat')
+type View = 'chat-launch' | 'settings' | 'dashboard-launch'
+const currentView = ref<View>('dashboard-launch')
 
 // Dashboard
 const launchState = ref<'idle' | 'launching' | 'started' | 'error'>('idle')
@@ -906,6 +777,15 @@ async function launchDashboard() {
   } catch (e: any) {
     launchState.value = 'error'
     launchError.value = e.toString()
+  }
+}
+
+async function openChatWindow() {
+  try {
+    await invoke('open_chat_window')
+    currentView.value = 'chat-launch'
+  } catch (e: any) {
+    showToast('打开对话窗口失败: ' + e, 'error')
   }
 }
 
