@@ -1422,6 +1422,16 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
         }
     }
 
+    // 单独安装 Dashboard Web UI 依赖（hermes-agent 包不声明 fastapi/uvicorn）
+    let mut web_deps = new_python_cmd(&python);
+    web_deps.arg("-m").arg("pip").arg("install")
+        .arg("fastapi").arg("uvicorn")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    web_deps.creation_flags(0x08000000);
+    web_deps.output().ok();
+
     // Step 4: 安装 Node.js（Web UI 需要）
     ensure_nodejs(&data_dir).await?;
 
@@ -1691,6 +1701,31 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     let python = find_hermes_python()?;
     let hermes = find_hermes_agent()?;
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
+
+    // 确保 Dashboard Web UI 依赖已安装（fastapi/uvicorn）
+    let deps_ok = {
+        let mut cmd = new_python_cmd(&python);
+        cmd.arg("-c").arg("import fastapi, uvicorn")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+        cmd.output().map(|o| o.status.success()).unwrap_or(false)
+    };
+    if !deps_ok {
+        let mut install = new_python_cmd(&python);
+        install.arg("-m").arg("pip").arg("install")
+            .arg("fastapi").arg("uvicorn")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        install.creation_flags(0x08000000);
+        let result = install.output().map_err(|e| format!("安装 Web UI 依赖失败: {}", e))?;
+        if !result.status.success() {
+            let stderr = decode_output(&result.stderr);
+            return Err(format!("安装 Web UI 依赖失败 (fastapi/uvicorn): {}", stderr));
+        }
+    }
 
     // 检查 web_dist 是否存在，构建 web UI 前端
     let web_dist = agent_dir.join("web_dist");
