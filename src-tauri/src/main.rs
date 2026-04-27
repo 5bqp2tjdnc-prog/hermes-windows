@@ -2039,51 +2039,115 @@ async fn hermes_chat_send(message: String, app_handle: tauri::AppHandle) -> Resu
     Ok(ChatResult { response, session_id: String::new() })
 }
 
-/// 确保 Hermes 聊天 Web UI 正在运行（端口 9121），返回端口号
-async fn ensure_chat_web_ui() -> Result<u16, String> {
-    const CHAT_PORT: u16 = 9121;
-    let url = format!("http://127.0.0.1:{CHAT_PORT}");
+/// 确保 Hermes WebUI（原始 vanilla JS 界面）正在运行（端口 9122）
+async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, String> {
+    const WEBUI_PORT: u16 = 9122;
+    let url = format!("http://127.0.0.1:{WEBUI_PORT}");
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|_| "HTTP 客户端错误")?;
 
-    // 检查是否已经在运行
-    if client.get(&format!("{url}/api/status")).send().await.is_ok() {
-        return Ok(CHAT_PORT);
+    // 检查是否已在运行
+    if client.get(&url).send().await.is_ok() {
+        return Ok(WEBUI_PORT);
     }
 
-    // 需要启动
+    // 将 hermes-webui.zip 解压到数据目录（如果尚未提取）
+    let data_dir = get_data_dir()?;
+    let webui_extract_dir = data_dir.join("hermes-webui");
+    let script = webui_extract_dir.join("server.py");
+
+    if !script.exists() {
+        // 查找 hermes-webui.zip 资源文件（安装后与 exe 同目录，或 resource_dir）
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let resource_dir = app_handle.path().resource_dir().unwrap_or_default();
+
+        let zip_candidates = [
+            exe_dir.join("resources/hermes-webui.zip"),
+            exe_dir.join("hermes-webui.zip"),
+            resource_dir.join("resources/hermes-webui.zip"),
+            resource_dir.join("hermes-webui.zip"),
+            // 开发环境
+            PathBuf::from("src-tauri/resources/hermes-webui.zip"),
+        ];
+
+        let zip_path = zip_candidates
+            .iter()
+            .find(|p| p.exists())
+            .ok_or("未找到 hermes-webui.zip 资源文件")?;
+
+        // 解压
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            let result = std::process::Command::new("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg(format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    zip_path.to_string_lossy(),
+                    data_dir.to_string_lossy()
+                ))
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| format!("解压 hermes-webui.zip 失败: {}", e))?;
+            if !result.status.success() {
+                let stderr = decode_output(&result.stderr);
+                return Err(format!("解压 hermes-webui.zip 失败: {}", stderr));
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let result = std::process::Command::new("unzip")
+                .arg("-o")
+                .arg(zip_path.to_string_lossy().to_string())
+                .arg("-d")
+                .arg(data_dir.to_string_lossy().to_string())
+                .output()
+                .map_err(|e| format!("解压 hermes-webui.zip 失败: {}", e))?;
+            if !result.status.success() {
+                let stderr = decode_output(&result.stderr);
+                return Err(format!("解压 hermes-webui.zip 失败: {}", stderr));
+            }
+        }
+    }
+
+    if !script.exists() {
+        return Err("解压后未找到 hermes-webui/server.py".to_string());
+    }
+
+    // 启动服务器
     let python = find_hermes_python()?;
     let hermes = find_hermes_agent()?;
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
 
-    let web_dist = agent_dir.join("web_dist");
-    if !web_dist.exists() {
-        return Err("Hermes Web UI 前端文件未找到，请先安装运行环境".to_string());
-    }
-
     let mut cmd = std::process::Command::new(&python);
-    cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", &CHAT_PORT.to_string(), "--no-open"])
-        .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
-        .env("PYTHONPATH", agent_dir.to_string_lossy().to_string())
+    cmd.arg(&script)
+        .env("HERMES_WEBUI_PORT", WEBUI_PORT.to_string())
+        .env("HERMES_WEBUI_HOST", "127.0.0.1")
+        .env("HERMES_WEBUI_AGENT_DIR", agent_dir)
+        .env("PYTHONPATH", webui_extract_dir.to_string_lossy().to_string())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    cmd.spawn().map_err(|e| format!("启动聊天 Web UI 失败: {}", e))?;
+    cmd.spawn().map_err(|e| format!("启动 Hermes WebUI 失败: {}", e))?;
 
     // 等待就绪（最多 30s）
     for _ in 0..15 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if client.get(&format!("{url}/api/status")).send().await.is_ok() {
-            return Ok(CHAT_PORT);
+        if client.get(&url).send().await.is_ok() {
+            return Ok(WEBUI_PORT);
         }
     }
 
-    Err(format!("聊天 Web UI (端口 {CHAT_PORT}) 启动超时 (30s)"))
+    Err(format!("Hermes WebUI (端口 {WEBUI_PORT}) 启动超时 (30s)"))
 }
 
 /// 在 WebView 窗口中打开管理后台
@@ -2161,7 +2225,7 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
     }))
 }
 
-/// 在 WebView 窗口中打开 AI 对话（启动独立的 Hermes Web UI 实例）
+/// 在 WebView 窗口中打开 AI 对话（启动独立的 Hermes 原始 WebUI）
 #[tauri::command]
 async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use tauri::WebviewWindowBuilder;
@@ -2169,18 +2233,18 @@ async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     // 检查是否已有窗口
     if let Some(window) = app_handle.get_webview_window("hermes-chat") {
         window.set_focus().ok();
-        return Ok(serde_json::json!({"success": true, "url": format!("http://127.0.0.1:9121")}));
+        return Ok(serde_json::json!({"success": true, "url": format!("http://127.0.0.1:9122")}));
     }
 
-    // 启动独立的 Hermes Web UI 实例（端口 9121）
-    let port = ensure_chat_web_ui().await?;
-    let chat_url = format!("http://127.0.0.1:{port}");
+    // 启动独立的 Hermes 原始 WebUI 实例（端口 9122，同本机 localhost:8787）
+    let port = ensure_webui_server(&app_handle).await?;
+    let webui_url = format!("http://127.0.0.1:{port}");
 
-    // 创建 WebView 窗口，显示完整的 Hermes Web UI（包含聊天、任务、技能、记忆等功能）
+    // 创建 WebView 窗口，显示原始的 Hermes Web UI（聊天、任务、技能、记忆面板）
     let _window = WebviewWindowBuilder::new(
         &app_handle,
         "hermes-chat",
-        tauri::WebviewUrl::External(chat_url.parse().map_err(|_| "URL 格式错误")?),
+        tauri::WebviewUrl::External(webui_url.parse().map_err(|_| "URL 格式错误")?),
     )
     .title("Hermes AI 对话")
     .inner_size(1000.0, 750.0)
@@ -2189,7 +2253,7 @@ async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     .build()
     .map_err(|e| format!("打开 AI 对话窗口失败: {}", e))?;
 
-    Ok(serde_json::json!({"success": true, "url": chat_url}))
+    Ok(serde_json::json!({"success": true, "url": webui_url}))
 }
 
 // ============ Main ============

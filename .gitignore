@@ -39,3 +39,6 @@ Thumbs.db
 
 # Bundled runtime resources (tracked in git, downloaded only as fallback)
 # src-tauri/hermes-agent.zip
+
+# Extracted web UI directory (zip is tracked instead)
+src-tauri/resources/hermes-webui/

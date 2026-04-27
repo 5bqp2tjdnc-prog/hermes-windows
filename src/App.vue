@@ -460,7 +460,7 @@ import { getVersion } from '@tauri-apps/api/app'
 // ============ State ============
 type View = 'chat-launch' | 'settings' | 'dashboard-launch'
 const currentView = ref<View>('dashboard-launch')
-const appVersion = ref('1.0.1')
+const appVersion = ref('1.0.3')
 
 // Dashboard
 const launchState = ref<'idle' | 'launching' | 'started' | 'error'>('idle')
