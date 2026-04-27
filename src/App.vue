@@ -68,7 +68,6 @@
         <div class="license-warning" v-if="licenseInfo.activated && licenseInfo.days_left < 30">
           即将到期 · {{ licenseInfo.days_left }} 天
         </div>
-        <div class="sidebar-version">v{{ appVersion }}</div>
       </div>
     </aside>
 
@@ -204,13 +203,9 @@
                 如有任何问题，请通过微信联系：
               </p>
               <div class="guide-contact">
-                <span class="contact-icon">💬</span>
                 <span class="contact-label">微信：</span>
                 <span class="contact-value">13213181166</span>
               </div>
-              <p class="guide-hint" style="margin-top: 12px;">
-                本软件已预装 MiniMax 大模型，开箱即用。如需使用其他模型或自己的 API Key，可在设置中配置。
-              </p>
             </div>
           </section>
         </div>
@@ -996,12 +991,6 @@ html, body {
   padding: 4px 8px;
   background: var(--warn-bg);
   border-radius: var(--radius-sm);
-}
-
-.sidebar-version {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
 }
 
 /* ============ Main Content ============ */
