@@ -611,28 +611,26 @@ async function copyMachineCode() {
 
 // ============ View Navigation ============
 async function openChatView() {
-  currentView.value = 'chat'
   try {
     const result: any = await invoke('open_chat_window')
     if (result.url) {
       chatUrl.value = result.url
     }
+    currentView.value = 'chat'
   } catch (e: any) {
     showToast('启动对话失败: ' + e, 'error')
-    currentView.value = 'guide'
   }
 }
 
 async function openDashboardView() {
-  currentView.value = 'dashboard'
   try {
     const result: any = await invoke('open_management_backend')
     if (result.url) {
       dashboardUrl.value = result.url
     }
+    currentView.value = 'dashboard'
   } catch (e: any) {
     showToast('启动管理后台失败: ' + e, 'error')
-    currentView.value = 'guide'
   }
 }
 
