@@ -453,9 +453,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 
 // ============ State ============
 type View = 'chat-launch' | 'settings' | 'dashboard-launch'
@@ -480,18 +479,7 @@ const licenseInfo = ref({
   license_key: '',
 })
 
-// Chat
-const messages = ref<Array<{ role: string; content: string; error?: string }>>([])
-const inputText = ref('')
-const isLoading = ref(false)
-const isStreaming = ref(false)
-const streamingLines = ref<string[]>([])
-let unlistenStreamFn: (() => void) | null = null
-const sessionId = ref('')
-const messagesContainer = ref<HTMLElement>()
-const inputRef = ref<HTMLTextAreaElement>()
-
-// Toast
+// ============ Dashboard ============
 const toast = ref({ show: false, message: '', type: 'info' as 'success' | 'error' | 'info' })
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -529,14 +517,6 @@ const envStatus = ref({
 })
 
 // ============ Computed ============
-const currentModel = computed(() => {
-  return apiConfig.value.model || 'MiniMax-Text-01'
-})
-
-const canUseChat = computed(() => {
-  return licenseInfo.value.activated
-})
-
 const licenseClass = computed(() => {
   if (!licenseInfo.value.activated) return 'inactive'
   if (licenseInfo.value.days_left <= 0) return 'expired'
@@ -613,151 +593,6 @@ async function copyMachineCode() {
     showToast('机器码已复制', 'success')
   } catch (e) {
     showToast('复制失败', 'error')
-  }
-}
-
-// ============ Chat ============
-const loadingStatus = ref('')
-let loadingTimer: ReturnType<typeof setInterval> | null = null
-
-function startLoadingTimer() {
-  const stages = [
-    { time: 0, text: '正在连接 AI 服务...' },
-    { time: 3, text: '正在思考...' },
-    { time: 8, text: '……' },
-    { time: 15, text: '处理较长，请稍候...' },
-    { time: 25, text: '仍在处理中，请耐心等待...' },
-  ]
-  loadingStatus.value = stages[0].text
-  let nextIdx = 1
-  loadingTimer = setInterval(() => {
-    const elapsed = (Date.now() - loadingStartTime) / 1000
-    while (nextIdx < stages.length && elapsed >= stages[nextIdx].time) {
-      loadingStatus.value = stages[nextIdx].text
-      nextIdx++
-    }
-    if (nextIdx >= stages.length) {
-      // 超过40秒后，每10秒换一个说法
-      const extras = [
-        '还在处理中...',
-        'AI 正在思考...',
-        '仍在处理，请耐心等待...',
-      ]
-      const extraIdx = Math.min(Math.floor((elapsed - 40) / 10), extras.length - 1)
-      loadingStatus.value = extras[extraIdx]
-    }
-  }, 1000)
-}
-
-function stopLoadingTimer() {
-  if (loadingTimer) {
-    clearInterval(loadingTimer)
-    loadingTimer = null
-  }
-}
-
-let loadingStartTime = 0
-
-async function sendMessage() {
-  if (!inputText.value.trim() || isLoading.value) return
-
-  const userMsg = inputText.value.trim()
-  messages.value.push({ role: 'user', content: userMsg })
-  inputText.value = ''
-  isLoading.value = true
-  isStreaming.value = false
-  streamingLines.value = []
-  loadingStartTime = Date.now()
-  startLoadingTimer()
-
-  autoResizeTextarea()
-
-  // 先注册流式监听
-  try {
-    unlistenStreamFn = await listen<string>('chat-stream-line', (event) => {
-      if (!isStreaming.value) {
-        isStreaming.value = true
-      }
-      streamingLines.value.push(event.payload)
-      // 等 DOM 渲染完再滚动
-      nextTick(() => smartScrollToBottom())
-    })
-  } catch (e) {
-    console.warn('注册流式监听失败:', e)
-  }
-
-  try {
-    const result: { response: string; session_id: string } = await invoke('hermes_chat_send', {
-      message: userMsg,
-    })
-    messages.value.push({ role: 'assistant', content: result.response })
-    if (result.session_id) {
-      sessionId.value = result.session_id
-    }
-  } catch (e: any) {
-    messages.value.push({ role: 'assistant', content: '', error: e.toString() })
-  } finally {
-    isLoading.value = false
-    isStreaming.value = false
-    streamingLines.value = []
-    stopLoadingTimer()
-    if (unlistenStreamFn) {
-      unlistenStreamFn()
-      unlistenStreamFn = null
-    }
-    // 滚动到底 + 聚焦输入框
-    nextTick(() => {
-      scrollToBottomWithRetry()
-      inputRef.value?.focus()
-    })
-  }
-}
-
-function newChat() {
-  messages.value = []
-  sessionId.value = ''
-  inputText.value = ''
-  loadingStatus.value = ''
-  streamingLines.value = []
-  isStreaming.value = false
-  stopLoadingTimer()
-  if (unlistenStreamFn) {
-    unlistenStreamFn()
-    unlistenStreamFn = null
-  }
-  nextTick(() => scrollToBottomWithRetry())
-}
-
-function autoResizeTextarea() {
-  const el = inputRef.value
-  if (el) {
-    el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px'
-  }
-}
-
-function scrollToBottom() {
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-  }
-}
-
-// 带重试的滚动，确保内容渲染完成后滚到底
-function scrollToBottomWithRetry(retries = 3) {
-  scrollToBottom()
-  if (retries > 0) {
-    setTimeout(() => scrollToBottomWithRetry(retries - 1), 100)
-  }
-}
-
-// 流式更新时的智能滚动：用户手动向上翻则不打扰
-function smartScrollToBottom() {
-  const el = messagesContainer.value
-  if (!el) return
-  const threshold = 80
-  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
-  if (isNearBottom) {
-    el.scrollTop = el.scrollHeight
   }
 }
 
