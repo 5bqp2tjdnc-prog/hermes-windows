@@ -37,7 +37,7 @@
             <line x1="15" y1="15" x2="21" y2="21"/>
             <line x1="4" y1="4" x2="9" y2="9"/>
           </svg>
-          Web UI
+          管理后台
         </button>
         <button
           class="nav-item"
@@ -263,7 +263,7 @@
                 <line x1="15" y1="15" x2="21" y2="21"/>
                 <line x1="4" y1="4" x2="9" y2="9"/>
               </svg>
-              Web UI
+              管理后台
             </h2>
           </div>
         </div>
@@ -272,8 +272,8 @@
             <div class="welcome-logo">
               <span class="welcome-caduceus">☤</span>
             </div>
-            <h2 class="welcome-title">Hermes Agent Web UI</h2>
-            <p class="welcome-desc">启动完整的 Web 管理界面</p>
+            <h2 class="welcome-title">Hermes 管理后台</h2>
+            <p class="welcome-desc">启动完整的 Hermes 管理后台</p>
             <div class="launch-status" v-if="launchState === 'launching'">
               <div class="launch-spinner"></div>
               <p>正在启动 Hermes Dashboard...</p>
@@ -296,13 +296,13 @@
               <button class="btn btn-primary launch-btn" @click="launchDashboard">重试</button>
             </div>
             <div v-else class="launch-actions">
-              <p class="launch-desc">Web UI 提供完整的 Hermes Agent 功能：对话管理、技能配置、环境变量、定时任务等</p>
+              <p class="launch-desc">管理后台提供完整的 Hermes Agent 功能：对话管理、技能配置、环境变量、定时任务等</p>
               <button class="btn btn-primary launch-btn" @click="launchDashboard" :disabled="!envReady">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16">
                   <polyline points="16 3 21 3 21 8"/>
                   <line x1="4" y1="20" x2="21" y2="3"/>
                 </svg>
-                启动 Web UI
+                启动管理后台
               </button>
               <p v-if="!envReady" class="launch-hint" style="color: var(--error);">运行环境未就绪，请先在设置中检查</p>
             </div>
@@ -508,10 +508,10 @@
                     <span class="check-dot"></span>
                     {{ envStatus.node_ok ? '已安装' : '未安装' }}
                   </span>
-                  <span class="env-check-path">{{ envStatus.node_version || 'Web UI 需要' }}</span>
+                  <span class="env-check-path">{{ envStatus.node_version || '管理后台需要' }}</span>
                 </div>
                 <div class="env-item" v-if="!envStatus.node_ok">
-                  <span class="env-hint">Web UI 需要 Node.js，可自动下载安装</span>
+                  <span class="env-hint">管理后台需要 Node.js，可自动下载安装</span>
                   <button class="btn btn-sm btn-primary" @click="setupNodejs" :disabled="isInstallingNode">
                     {{ isInstallingNode ? '安装中...' : '安装 Node.js' }}
                   </button>

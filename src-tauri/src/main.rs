@@ -1720,10 +1720,10 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
             .stderr(std::process::Stdio::null());
         #[cfg(target_os = "windows")]
         install.creation_flags(0x08000000);
-        let result = install.output().map_err(|e| format!("安装 Web UI 依赖失败: {}", e))?;
+        let result = install.output().map_err(|e| format!("安装管理后台依赖失败: {}", e))?;
         if !result.status.success() {
             let stderr = decode_output(&result.stderr);
-            return Err(format!("安装 Web UI 依赖失败 (fastapi/uvicorn): {}", stderr));
+            return Err(format!("安装管理后台依赖失败 (fastapi/uvicorn): {}", stderr));
         }
     }
 
@@ -1794,10 +1794,10 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
             setup_node_path(&mut build);
             #[cfg(target_os = "windows")]
             build.creation_flags(0x08000000);
-            let output = build.output().map_err(|e| format!("构建 Web UI 失败: {}", e))?;
+            let output = build.output().map_err(|e| format!("构建管理后台前端失败: {}", e))?;
             if !output.status.success() {
                 return Err(format!(
-                    "构建 Web UI 失败: {}",
+                    "构建管理后台前端失败: {}",
                     decode_output(&output.stderr)
                 ));
             }
@@ -1816,7 +1816,7 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
         }
         if !web_dist.exists() {
             return Err(
-                "Web UI 文件未找到。请确保运行环境安装完整，或安装 Node.js (nodejs.org) 后重试。"
+                "管理后台前端文件未找到。请确保运行环境安装完整，或安装 Node.js (nodejs.org) 后重试。"
                     .to_string()
             );
         }
