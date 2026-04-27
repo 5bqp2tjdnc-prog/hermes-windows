@@ -2129,6 +2129,11 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     let hermes = find_hermes_agent()?;
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
 
+    // 将 stderr 重定向到日志文件，便于诊断崩溃原因
+    let log_path = data_dir.join("webui-server.log");
+    let log_file = std::fs::File::create(&log_path)
+        .map_err(|e| format!("创建 WebUI 日志文件失败: {}", e))?;
+
     let mut cmd = std::process::Command::new(&python);
     cmd.arg(&script)
         .env("HERMES_WEBUI_PORT", WEBUI_PORT.to_string())
@@ -2138,22 +2143,55 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         .env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
         .env("HERMES_MODEL", &config.model)
+        .env("PYTHONUNBUFFERED", "1")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(log_file);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    cmd.spawn().map_err(|e| format!("启动 Hermes WebUI 失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("启动 Hermes WebUI 失败: {}", e))?;
 
-    // 等待就绪（最多 30s）
-    for _ in 0..15 {
+    // 等待就绪（最多 30s），同时监控进程是否提前崩溃
+    for i in 0..15 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // 检查进程是否已退出
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                let trimmed = stderr_log.trim();
+                let detail = if trimmed.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n--- stderr 日志 ---\n{}", trimmed)
+                };
+                return Err(format!(
+                    "Hermes WebUI 进程异常退出 (code: {:?}, 第 {} 秒){}",
+                    status.code(),
+                    (i + 1) * 2,
+                    detail
+                ));
+            }
+            Ok(None) => {} // 仍在运行
+            Err(e) => {
+                return Err(format!("检查 WebUI 进程状态失败: {}", e));
+            }
+        }
+
         if client.get(&url).send().await.is_ok() {
             return Ok(WEBUI_PORT);
         }
     }
 
-    Err(format!("Hermes WebUI (端口 {WEBUI_PORT}) 启动超时 (30s)"))
+    // 超时——读取日志帮助诊断
+    let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let trimmed = stderr_log.trim();
+    let detail = if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("\n--- stderr 日志 ---\n{}", trimmed)
+    };
+    Err(format!("Hermes WebUI (端口 {WEBUI_PORT}) 启动超时 (30s){}", detail))
 }
 
 /// 启动管理后台，返回 URL（内嵌显示，不弹窗）
