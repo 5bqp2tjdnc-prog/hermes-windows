@@ -52,26 +52,61 @@ jobs:
           fi
         shell: bash
 
-      # Build Web UI from hermes-agent source
-      - name: Build Web UI
+      # Clone hermes-workspace and combine with hermes-agent (sibling layout)
+      # bootstrap.py needs hermes-agent and hermes-workspace as sibling dirs
+      - name: Package Hermes workspace
         shell: pwsh
         run: |
           $zipPath = "$env:GITHUB_WORKSPACE\src-tauri\hermes-agent.zip"
-          $tempDir = "$env:TEMP\hermes-web"
-          New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+          $tempDir = "$env:TEMP\hermes-package"
+
+          # 1. 创建根目录
+          if (-not (Test-Path "$tempDir")) { New-Item -ItemType Directory -Force -Path "$tempDir" | Out-Null }
+
+          # 2. 解压 hermes-agent
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-          $extractDir = "$tempDir\extract"
-          [System.IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $extractDir)
+          [System.IO.Compression.ZipFileExtensions]::ExtractToDirectory($zip, $tempDir)
           $zip.Dispose()
-          Push-Location "$extractDir\web"
+          $agentDir = "$tempDir\hermes-agent"
+          Write-Output "hermes-agent extracted to $agentDir"
+
+          # 3. 构建管理后台 React 前端（web_dist/）
+          Write-Output "Building dashboard web UI..."
+          Push-Location "$agentDir\web"
           npm ci
           npm run build
           Pop-Location
-          Move-Item "$extractDir\hermes_cli\web_dist" "$extractDir\web_dist"
+          # hermes_cli.main dashboard 从 web_dist/ 读取静态文件
+          Move-Item "$agentDir\web\dist" "$agentDir\web_dist" -Force
+          Write-Output "Dashboard built"
+
+          # 4. 克隆 hermes-workspace
+          $wsDir = "$tempDir\hermes-workspace"
+          if (-not (Test-Path $wsDir)) {
+            git clone --depth 1 https://github.com/nesquena/hermes-webui.git $wsDir
+            Write-Output "hermes-workspace cloned"
+          }
+
+          # 5. 验证同级目录结构
+          Write-Output "Contents: $(Get-ChildItem $tempDir -Name -Directory)"
+          $expected = @("hermes-agent", "hermes-workspace")
+          foreach ($d in $expected) {
+            if (-not (Test-Path "$tempDir\$d")) {
+              Write-Output "ERROR: Missing $d in $tempDir"
+              exit 1
+            }
+          }
+          Write-Output "Sibling structure verified"
+
+          # 6. 打包成新的 hermes-agent.zip
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-          [System.IO.Compression.ZipFile]::CreateFromDirectory($extractDir, $zipPath)
-          Remove-Item -Recurse -Force $tempDir
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($tempDir, $zipPath, 'Optimal')
+          Write-Output "Combined zip created: $((Get-Item $zipPath).Length / 1MB) MB"
+
+          # 清理
+          Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+          Write-Output "Packaging complete"
 
       # Rust cache
       - name: Rust cache
