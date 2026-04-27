@@ -73,8 +73,8 @@ def init_agent():
         model=model,
         quiet_mode=True,
         max_iterations=30,
-        # enable common toolsets for search / web / code capabilities
         enabled_toolsets=["research", "web", "code"],
+        request_overrides={"enable_search": True},
     )
 
 

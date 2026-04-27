@@ -69,6 +69,7 @@ def get_agent():
             quiet_mode=True,
             max_iterations=30,
             enabled_toolsets=["research", "web", "code"],
+            request_overrides={"enable_search": True},
         )
     _agent_ready = True
     return _agent
