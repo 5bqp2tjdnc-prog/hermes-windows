@@ -1960,6 +1960,12 @@ async fn ensure_chat_server(state: &HermesChatState, app_handle: &tauri::AppHand
         let api_key = config.effective_api_key();
         let port: u16 = 9120;
 
+        // 将 stderr 重定向到日志文件
+        let data_dir = get_data_dir()?;
+        let log_path = data_dir.join("chat-server.log");
+        let log_file = std::fs::File::create(&log_path)
+            .map_err(|e| format!("创建聊天服务日志文件失败: {}", e))?;
+
         let mut cmd = std::process::Command::new(&python);
         cmd.arg(&script)
             .env("HERMES_AGENT_DIR", agent_dir)
@@ -1967,8 +1973,9 @@ async fn ensure_chat_server(state: &HermesChatState, app_handle: &tauri::AppHand
             .env("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
             .env("HERMES_MODEL", "MiniMax-M2.7-highspeed")
             .env("HERMES_CHAT_PORT", port.to_string())
+            .env("PYTHONUNBUFFERED", "1")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stderr(log_file);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x08000000);
 
@@ -1980,8 +1987,28 @@ async fn ensure_chat_server(state: &HermesChatState, app_handle: &tauri::AppHand
 
     // 等待服务就绪（最多 10s）
     let url = format!("http://127.0.0.1:{}/api/health", 9120);
-    for _ in 0..20 {
+    for i in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // 检查进程存活
+        {
+            let mut guard = state.process.lock().unwrap();
+            if let Some(ref mut child) = *guard {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let log_path = get_data_dir().unwrap_or_default().join("chat-server.log");
+                        let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                        let trimmed = stderr_log.trim();
+                        let detail = if trimmed.is_empty() { String::new() } else { format!("\n--- stderr 日志 ---\n{}", trimmed) };
+                        return Err(format!("聊天服务进程异常退出 (code: {:?}, 第 {} 秒){}",
+                            status.code(), (i + 1) / 2, detail));
+                    }
+                    Ok(None) => {} // 仍在运行
+                    Err(e) => return Err(format!("检查聊天服务进程状态失败: {}", e)),
+                }
+            }
+        }
+
         match reqwest::get(&url).await {
             Ok(resp) => {
                 if let Ok(body) = resp.json::<serde_json::Value>().await {
@@ -1994,7 +2021,12 @@ async fn ensure_chat_server(state: &HermesChatState, app_handle: &tauri::AppHand
         }
     }
 
-    Err(format!("Hermes 聊天服务 (PID:{}) 启动超时", pid))
+    // 超时——读取日志帮助诊断
+    let log_path = get_data_dir().unwrap_or_default().join("chat-server.log");
+    let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let trimmed = stderr_log.trim();
+    let detail = if trimmed.is_empty() { String::new() } else { format!("\n--- stderr 日志 ---\n{}", trimmed) };
+    Err(format!("Hermes 聊天服务 (PID:{}) 启动超时{}", pid, detail))
 }
 
 /// 发送消息到持久化的 Hermes 聊天服务
@@ -2250,14 +2282,17 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
 }
 
 /// 启动 AI 对话 WebUI，返回 URL（内嵌显示，不弹窗）
+/// 使用 FastAPI/uvicorn 版本的聊天服务器（端口 9120），
+/// 与管理后台使用相同技术栈，比旧版 http.server 更稳定可靠
 #[tauri::command]
 async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let port = ensure_webui_server(&app_handle).await?;
-    let webui_url = format!("http://127.0.0.1:{port}");
+    let state = app_handle.state::<HermesChatState>();
+    let port = ensure_chat_server(&state, &app_handle).await?;
+    let chat_url = format!("http://127.0.0.1:{port}");
 
     Ok(serde_json::json!({
         "success": true,
-        "url": webui_url,
+        "url": chat_url,
     }))
 }
 
