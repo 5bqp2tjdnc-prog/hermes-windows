@@ -85,7 +85,7 @@ struct NanjingActivate {
 
 const ACTIVATION_SALT: &[u8] = b"HermesAI_v1_2025";
 const LICENSE_FILE: &str = "license.dat";
-const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/v1";
+const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic";
 const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
 
 // 内置 MiniMax API Key（发布前确认额度充足）
@@ -648,6 +648,8 @@ fn run_hermes_chat(prompt: &str, session_id: &str) -> Result<(String, String), S
 
     cmd.env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
+        .env("ANTHROPIC_API_KEY", &api_key)
+        .env("OPENAI_API_KEY", &api_key)
         .env("HERMES_Q", prompt)
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
@@ -748,6 +750,8 @@ fn run_chat_stream_impl(
 
     cmd.env("MINIMAX_API_KEY", api_key)
         .env("MINIMAX_CN_API_KEY", api_key)
+        .env("ANTHROPIC_API_KEY", api_key)
+        .env("OPENAI_API_KEY", api_key)
         .env("HERMES_Q", prompt)
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
@@ -1957,7 +1961,10 @@ async fn ensure_chat_server(state: &HermesChatState, app_handle: &tauri::AppHand
         cmd.arg(&script)
             .env("HERMES_AGENT_DIR", agent_dir)
             .env("MINIMAX_API_KEY", &api_key)
-            .env("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
+            .env("MINIMAX_CN_API_KEY", &api_key)
+            .env("ANTHROPIC_API_KEY", &api_key)
+            .env("OPENAI_API_KEY", &api_key)
+            .env("MINIMAX_BASE_URL", "https://api.minimaxi.com/anthropic")
             .env("HERMES_MODEL", "MiniMax-M2.7-highspeed")
             .env("HERMES_CHAT_PORT", port.to_string())
             .env("PYTHONUNBUFFERED", "1")
@@ -2157,6 +2164,8 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         .env("HERMES_WEBUI_AGENT_DIR", agent_dir.to_string_lossy().as_ref())
         .env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
+        .env("ANTHROPIC_API_KEY", &api_key)
+        .env("OPENAI_API_KEY", &api_key)
         .env("PYTHONUNBUFFERED", "1")
         .current_dir(&webui_dir)
         .stdout(Stdio::null())
