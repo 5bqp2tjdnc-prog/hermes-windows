@@ -32,37 +32,18 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      # Download Hermes Agent runtime
-      - name: Download Hermes Agent runtime
+      # Clone original Hermes Agent from GitHub (完整原版)
+      - name: Clone Hermes Agent runtime
         shell: pwsh
         run: |
-          echo "Downloading hermes-agent.zip..."
-          $bytes = Invoke-WebRequest -Uri "http://175.27.242.158:5000/download/hermes-agent.zip" `
-            -TimeoutSec 200 -UseBasicParsing -PassThru
+          # Clone original NousResearch/hermes-agent
+          echo "Cloning original hermes-agent from GitHub..."
+          $agentSrc = "$env:TEMP\hermes-agent"
+          if (Test-Path $agentSrc) { Remove-Item $agentSrc -Recurse -Force }
+          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git $agentSrc 2>&1 | Out-Null
 
-          if ($bytes.Length -lt 1000000) {
-            Write-Output "Download too small or failed: $($bytes.Length) bytes"
-            exit 1
-          }
-          Write-Output "Downloaded: $([math]::Round($bytes.Length/1MB,1)) MB"
-          [System.IO.File]::WriteAllBytes("$env:TEMP\hermes-agent-raw.zip", $bytes.Content)
-
-          # Extract hermes-agent
-          echo "Extracting hermes-agent..."
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          if (Test-Path "$env:TEMP\hermes-bundle") { Remove-Item "$env:TEMP\hermes-bundle" -Recurse -Force }
-          New-Item -ItemType Directory -Force "$env:TEMP\hermes-bundle" | Out-Null
-
-          $zip = [System.IO.Compression.ZipFile]::OpenRead("$env:TEMP\hermes-agent-raw.zip")
-          $zip.ExtractToDirectory("$env:TEMP\hermes-bundle")
-          $zip.Dispose()
-
-          # Determine top-level dir name in zip
-          $topLevel = (Get-ChildItem "$env:TEMP\hermes-bundle" -Directory | Select-Object -First 1).Name
-          $agentSrc = "$env:TEMP\hermes-bundle\$topLevel"
-
-          if (-not (Test-Path "$agentSrc\web")) {
-            Write-Output "ERROR: web dir missing in hermes-agent"
+          if (-not (Test-Path "$agentSrc\agent\__init__.py")) {
+            Write-Output "ERROR: agent package not found in cloned hermes-agent"
             exit 1
           }
 
@@ -80,11 +61,11 @@ jobs:
           }
           echo "Dashboard built"
 
-          # Clone and build hermes-workspace (AI chat interface)
+          # Clone hermes-workspace (AI chat interface)
           echo "Cloning hermes-workspace..."
           $wsDir = "$env:TEMP\hermes-workspace"
           if (Test-Path $wsDir) { Remove-Item $wsDir -Recurse -Force }
-          git clone --depth 1 https://github.com/NousResearch/hermes-webui.git $wsDir 2>&1 | Out-Null
+          git clone --depth 1 https://github.com/nesquena/hermes-webui.git $wsDir 2>&1 | Out-Null
 
           if (-not (Test-Path "$wsDir\bootstrap.py")) {
             Write-Output "ERROR: bootstrap.py not found in hermes-workspace"
@@ -114,12 +95,14 @@ jobs:
           # Repackage hermes-agent.zip
           echo "Repackaging hermes-agent.zip..."
           if (Test-Path "src-tauri\hermes-agent.zip") { Remove-Item "src-tauri\hermes-agent.zip" -Force }
-          [System.IO.Compression.ZipFile]::CreateFromDirectory("$env:TEMP\hermes-final", "src-tauri\hermes-agent.zip", 'Optimal')
+          Compress-Archive -Path "$env:TEMP\hermes-final\*" -DestinationPath "src-tauri\hermes-agent.zip" -Force
           Write-Output "Package ready: $([math]::Round((Get-Item src-tauri\hermes-agent.zip).Length/1MB,1)) MB"
 
+          # Overwrite resources zip so Tauri bundles the newly built zip
+          Copy-Item "src-tauri\hermes-agent.zip" "src-tauri\resources\hermes-agent.zip" -Force
+          Write-Host "Updated resources/hermes-agent.zip"
+
           # Cleanup
-          Remove-Item "$env:TEMP\hermes-agent-raw.zip" -Force -EA SilentlyContinue
-          Remove-Item "$env:TEMP\hermes-bundle" -Recurse -Force -EA SilentlyContinue
           Remove-Item "$env:TEMP\hermes-final" -Recurse -Force -EA SilentlyContinue
           echo "Done"
 
