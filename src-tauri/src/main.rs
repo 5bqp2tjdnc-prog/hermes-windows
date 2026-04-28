@@ -102,6 +102,7 @@ pub struct ApiMessage {
 pub struct AppState {
     pub hermes_ready: Mutex<bool>,
     pub chat_history: Mutex<Vec<ApiMessage>>,
+    pub webui_process: Mutex<Option<Child>>,
 }
 
 // ============ Helpers ============
@@ -510,7 +511,183 @@ fn find_hermes_python() -> Result<PathBuf, String> {
         return Ok(system);
     }
 
+    // 8. 自动下载 Python 3.10 embeddable（最后一招，仅 Windows）
+    #[cfg(target_os = "windows")]
+    if let Ok(data_dir) = get_data_dir() {
+        match download_bundled_python(&data_dir) {
+            Ok(python_exe) => return report_python(python_exe),
+            Err(e) => return Err(format!("下载 Python 失败: {}", e)),
+        }
+    }
+
     Err("未找到 Python，请先安装 Python 3.10+".to_string())
+}
+
+/// 获取捆绑 Python 目录（用于自动下载场景）
+fn get_bundled_python_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("python")
+}
+
+/// 修复 Windows embeddable Python 的 _pth 文件，确保 PYTHONPATH 生效
+#[cfg(target_os = "windows")]
+fn fix_python_pth(python: &Path) {
+    let python_dir = python.parent().unwrap_or(Path::new("."));
+    if let Ok(entries) = std::fs::read_dir(python_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with("._pth") {
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    if content.contains("#import site") {
+                        let updated = content.replace("#import site", "import site");
+                        let _ = std::fs::write(entry.path(), updated);
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
+/// 检查捆绑 Python 是否完整可用（版本 >= 3.10 且有 pyyaml）（仅 Windows）
+#[cfg(target_os = "windows")]
+fn bundled_python_ok(data_dir: &Path) -> Option<PathBuf> {
+    let python_exe = get_bundled_python_dir(data_dir).join("python.exe");
+    if !python_exe.exists() {
+        return None;
+    }
+    // 检查版本
+    let output = std::process::Command::new(&python_exe)
+        .args(["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"])
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let parts: Vec<&str> = version_str.split('.').collect();
+    let (major, minor) = (parts.first()?, parts.get(1)?);
+    let major: u32 = major.parse().ok()?;
+    let minor: u32 = minor.parse().ok()?;
+    if major < 3 || (major == 3 && minor < 10) {
+        return None;
+    }
+    // 检查 pyyaml 依赖是否已安装
+    let pip_check = std::process::Command::new(&python_exe)
+        .args(["-m", "pip", "show", "pyyaml"])
+        .creation_flags(0x08000000)
+        .output()
+        .ok()?;
+    if !pip_check.status.success() {
+        return None;
+    }
+    Some(python_exe)
+}
+
+/// 下载并解压 Python 3.10+ embeddable（同步阻塞，仅 Windows）
+#[cfg(target_os = "windows")]
+fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
+    let python_dir = get_bundled_python_dir(data_dir);
+    if let Some(python_exe) = bundled_python_ok(data_dir) {
+        return Ok(python_exe);
+    }
+
+    let python_version = "3.10.11";
+    let embeddable_zip = format!("python-{}-embed-amd64.zip", python_version);
+    let download_url = format!(
+        "http://175.27.242.158:5000/download/{}",
+        embeddable_zip
+    );
+
+    let zip_path = data_dir.join(&embeddable_zip);
+
+    // 下载
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let response = client
+        .get(&download_url)
+        .send()
+        .map_err(|e| format!("下载 Python 失败: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("下载 Python 失败: HTTP {}", response.status()));
+    }
+
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("读取 Python 数据失败: {}", e))?
+        .to_vec();
+
+    std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入 Python 文件失败: {}", e))?;
+
+    // 解压
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let unzip_result = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    zip_path.to_string_lossy(),
+                    python_dir.to_string_lossy()
+                ),
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("解压 Python 失败: {}", e))?;
+
+        if !unzip_result.status.success() {
+            let stderr = String::from_utf8_lossy(&unzip_result.stderr);
+            return Err(format!("解压 Python 失败: {}", stderr));
+        }
+    }
+
+    std::fs::remove_file(&zip_path).ok();
+
+    let python_exe = python_dir.join("python.exe");
+    if !python_exe.exists() {
+        return Err("Python 解压后未找到 python.exe".to_string());
+    }
+
+    // embeddable Python 没有 pip，用 get-pip.py 安装
+    let getpip_url = "http://175.27.242.158:5000/download/get-pip.py";
+    let getpip_path = data_dir.join("get-pip.py");
+
+    let pip_client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+    if let Ok(pip_response) = pip_client.get(getpip_url).send() {
+        if pip_response.status().is_success() {
+            if let Ok(pip_bytes) = pip_response.bytes() {
+                std::fs::write(&getpip_path, &pip_bytes).ok();
+            }
+        }
+    }
+
+    if getpip_path.exists() {
+        let _ = std::process::Command::new(&python_exe)
+            .args([getpip_path.to_string_lossy().as_ref(), "--quiet"])
+            .creation_flags(0x08000000)
+            .output();
+        std::fs::remove_file(&getpip_path).ok();
+    }
+
+    // 安装 server.py 需要的依赖
+    let _ = std::process::Command::new(&python_exe)
+        .args(["-m", "pip", "install", "pyyaml", "fastapi", "uvicorn", "--quiet"])
+        .creation_flags(0x08000000)
+        .output();
+
+    // 修复 embeddable Python 默认忽略 PYTHONPATH 的问题
+    fix_python_pth(&python_exe);
+
+    Ok(python_exe)
 }
 
 fn find_hermes_agent() -> Result<PathBuf, String> {
@@ -1237,7 +1414,34 @@ async fn check_hermes_environment() -> Result<serde_json::Value, String> {
         "python_path": python.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "agent_path": agent.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "ready": python_ok && agent_ok,
+        "deps_ok": false,
     });
+
+    // 检查 pyyaml/fastapi/uvicorn 是否已安装
+    if python_ok {
+        if let Ok(ref py) = python {
+            #[cfg(target_os = "windows")]
+            {
+                let dep_check = std::process::Command::new(py)
+                    .args(["-c", "import yaml; import fastapi; import uvicorn; print('ok')"])
+                    .creation_flags(0x08000000)
+                    .output();
+                if dep_check.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+                    status["deps_ok"] = serde_json::Value::Bool(true);
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let dep_check = std::process::Command::new(py)
+                    .args(["-c", "import yaml; import fastapi; import uvicorn; print('ok')"])
+                    .output()
+                    .ok();
+                if dep_check.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+                    status["deps_ok"] = serde_json::Value::Bool(true);
+                }
+            }
+        }
+    }
 
     if let Ok(ref p) = python {
         if let Ok(ref a) = agent {
@@ -1295,15 +1499,33 @@ fn check_node_installed() -> Option<String> {
 async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let data_dir = get_data_dir()?;
     let zip_path = data_dir.join("hermes-agent.zip");
+    let current_version = app_handle.package_info().version.to_string();
+    let version_stamp = data_dir.join(".hermes-version");
 
-    // 检查是否已解压（hermes-agent 目录存在则跳过）
-    let hermes_check = data_dir.join("hermes-agent").join("hermes");
-    if hermes_check.exists() {
-        return Ok(serde_json::json!({
-            "success": true,
-            "message": "运行环境已就绪",
-            "path": hermes_check.to_string_lossy().to_string(),
-        }));
+    // 检查版本戳：如果不匹配或不存在，强制重新解压和安装
+    let need_setup = if version_stamp.exists() {
+        let stamp = std::fs::read_to_string(&version_stamp).unwrap_or_default().trim().to_string();
+        stamp != current_version
+    } else {
+        true
+    };
+
+    if !need_setup {
+        let hermes_check = data_dir.join("hermes-agent").join("hermes");
+        if hermes_check.exists() {
+            return Ok(serde_json::json!({
+                "success": true,
+                "message": "运行环境已就绪",
+                "path": hermes_check.to_string_lossy().to_string(),
+            }));
+        }
+    }
+
+    // 需要重新安装：先清理旧目录
+    if need_setup {
+        let _ = std::fs::remove_dir_all(data_dir.join("hermes-agent"));
+        let _ = std::fs::remove_dir_all(data_dir.join("hermes-workspace"));
+        let _ = std::fs::remove_file(&zip_path);
     }
 
     // Step 1: 获取 zip 文件
@@ -1367,6 +1589,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     std::fs::remove_file(&zip_path).ok();
 
     // 验证入口文件
+    let hermes_check = data_dir.join("hermes-agent").join("hermes");
     if !hermes_check.exists() {
         return Err("解压完成但未找到 hermes 入口文件".to_string());
     }
@@ -1387,6 +1610,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     let hermes_agent_dir = data_dir.join("hermes-agent");
     let mut install = new_python_cmd(&python);
     install.arg("-m").arg("pip").arg("install")
+        .arg("--force-reinstall")
         .arg(hermes_agent_dir.to_string_lossy().to_string());
     #[cfg(target_os = "windows")]
     install.creation_flags(0x08000000);
@@ -1412,23 +1636,26 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
         }
     }
 
-    // 单独安装 Dashboard Web UI 依赖（hermes-agent 包不声明 fastapi/uvicorn）
-    let mut web_deps = new_python_cmd(&python);
-    web_deps.arg("-m").arg("pip").arg("install")
-        .arg("fastapi").arg("uvicorn")
+    // 安装 hermes-workspace 依赖（server.py 需要 pyyaml 等）
+    let mut ws_deps = new_python_cmd(&python);
+    ws_deps.arg("-m").arg("pip").arg("install")
+        .arg("pyyaml").arg("fastapi").arg("uvicorn")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
-    web_deps.creation_flags(0x08000000);
-    web_deps.output().ok();
+    ws_deps.creation_flags(0x08000000);
+    ws_deps.output().ok();
 
     // Step 4: 安装 Node.js（Web UI 需要）
     ensure_nodejs(&data_dir).await?;
 
+    // 写入版本戳，标记当前环境对应版本
+    let _ = std::fs::write(&version_stamp, &current_version);
+
     Ok(serde_json::json!({
         "success": true,
         "message": "环境安装成功",
-        "path": hermes_check.to_string_lossy().to_string(),
+        "path": data_dir.join("hermes-agent").join("hermes").to_string_lossy().to_string(),
     }))
 }
 
@@ -1493,7 +1720,7 @@ async fn ensure_nodejs(data_dir: &Path) -> Result<(), String> {
     let node_version = "20.18.0";
     let (download_url, zip_name) = if cfg!(target_os = "windows") {
         (
-            format!("https://nodejs.org/dist/v{}/node-v{}-win-x64.zip", node_version, node_version),
+            format!("http://175.27.242.158:5000/download/node-v{}-win-x64.zip", node_version),
             format!("node-v{}-win-x64.zip", node_version),
         )
     } else {
@@ -1718,7 +1945,14 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     }
 
     // 检查 web_dist 是否存在，构建 web UI 前端
-    let web_dist = agent_dir.join("web_dist");
+    // CI 构建时 dashboard 输出可能在 hermes_cli/web_dist，兼容两种位置
+    let web_dist = if agent_dir.join("web_dist").exists() {
+        agent_dir.join("web_dist")
+    } else if agent_dir.join("hermes_cli").join("web_dist").exists() {
+        agent_dir.join("hermes_cli").join("web_dist")
+    } else {
+        agent_dir.join("web_dist")
+    };
     let web_src = agent_dir.join("web");
     if !web_dist.exists() {
         if web_src.exists() {
@@ -2068,7 +2302,7 @@ async fn hermes_chat_send(message: String, app_handle: tauri::AppHandle) -> Resu
 /// 确保 Hermes WebUI（vanilla JS 对话界面）正在运行（端口 9122）
 /// hermes-agent.zip 打包了 hermes-agent/ 和 hermes-workspace/ 两个同级目录
 async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, String> {
-    const WEBUI_PORT: u16 = 9122;
+    const WEBUI_PORT: u16 = 8787;
     let url = format!("http://127.0.0.1:{WEBUI_PORT}");
 
     let client = reqwest::Client::builder()
@@ -2082,6 +2316,20 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     }
 
     let data_dir = get_data_dir()?;
+    let current_version = app_handle.package_info().version.to_string();
+    let version_stamp = data_dir.join(".hermes-version");
+
+    // 检查版本戳：版本不匹配时强制清理旧目录并重新解压
+    let version_mismatch = if version_stamp.exists() {
+        let stamp = std::fs::read_to_string(&version_stamp).unwrap_or_default().trim().to_string();
+        stamp != current_version
+    } else {
+        true
+    };
+    if version_mismatch {
+        let _ = std::fs::remove_dir_all(data_dir.join("hermes-agent"));
+        let _ = std::fs::remove_dir_all(data_dir.join("hermes-workspace"));
+    }
 
     // 确保 hermes-agent.zip 已解压（包含 hermes-agent/ 和 hermes-workspace/ 同级目录）
     let agent_exe = find_hermes_agent()?;
@@ -2123,6 +2371,8 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
                 .output()
                 .map_err(|e| format!("解压 hermes-agent.zip 失败: {}", e))?;
         }
+        // 写入版本戳，标记解压完成
+        let _ = std::fs::write(&version_stamp, &current_version);
     }
 
     // 重新定位 hermes-agent 和 hermes-workspace
@@ -2132,71 +2382,177 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         .map(|p| p.join("hermes-workspace"))
         .ok_or("无法定位 hermes-workspace 目录")?;
 
-    let bootstrap_py = webui_dir.join("bootstrap.py");
-    if !bootstrap_py.exists() {
-        return Err("未找到 hermes-workspace/bootstrap.py".to_string());
+    let server_py = webui_dir.join("server.py");
+    if !server_py.exists() {
+        return Err("未找到 hermes-workspace/server.py".to_string());
     }
 
-    // 用 hermes-agent 的 venv Python 运行 bootstrap.py
-    let venv_python = agent_dir.join(
-        if cfg!(target_os = "windows") { "venv\\Scripts\\python.exe" } else { "venv/bin/python" }
-    );
-    let python = if venv_python.exists() {
-        venv_python.clone()
-    } else {
-        find_hermes_python()?
-    };
+    // 防御性校验：确保 server.py 是正确的 HTTP 服务器代码，而不是 bootstrap.py 或其他文件
+    let server_py_content = std::fs::read_to_string(&server_py).unwrap_or_default();
+    if !server_py_content.contains("BaseHTTPRequestHandler") || server_py_content.contains("bootstrap launcher") {
+        eprintln!("[Hermes] hermes-workspace/server.py 内容异常，疑似被替换为 bootstrap.py 或损坏，准备重新解压");
+        let _ = std::fs::remove_dir_all(&webui_dir);
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let resource_dir = app_handle.path().resource_dir().unwrap_or_default();
+        let zip_paths = [
+            exe_dir.join("hermes-agent.zip"),
+            resource_dir.join("hermes-agent.zip"),
+        ];
+        if let Some(zip_path) = zip_paths.iter().find(|p| p.exists()) {
+            #[cfg(target_os = "windows")]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &format!(
+                        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                        zip_path.to_string_lossy(),
+                        data_dir.to_string_lossy()
+                    )])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = std::process::Command::new("unzip")
+                    .args(["-o", &zip_path.to_string_lossy(), "hermes-workspace/*", "-d", &data_dir.to_string_lossy()])
+                    .output();
+            }
+        }
+        // 重新定位
+        let agent_exe = find_hermes_agent()?;
+        let agent_dir = agent_exe.parent().ok_or("无法获取 Hermes Agent 目录")?;
+        let webui_dir = agent_dir.parent()
+            .map(|p| p.join("hermes-workspace"))
+            .ok_or("无法定位 hermes-workspace 目录")?;
+        let server_py = webui_dir.join("server.py");
+        if !server_py.exists() {
+            return Err("重新解压后仍未找到 hermes-workspace/server.py".to_string());
+        }
+    }
+
+    // 终极修复：把 hermes-agent/agent 复制到 hermes-workspace/agent
+    // 这样 server.py 在 hermes-workspace/ 下运行时，当前目录直接有 agent 包
+    // 彻底绕过 sys.path、cwd、site 模块等一切不确定性
+    let src_agent = agent_dir.join("agent");
+    let dst_agent = webui_dir.join("agent");
+    if src_agent.exists() {
+        // 强制重新复制：删除旧的（可能不完整的）副本，确保每次都用最新文件
+        if dst_agent.exists() {
+            let _ = std::fs::remove_dir_all(&dst_agent);
+        }
+        if let Err(e) = copy_dir_recursive(&src_agent, &dst_agent) {
+            eprintln!("[Hermes] 复制 agent 包到 hermes-workspace 失败: {}", e);
+        }
+    }
+
+    // server.py 需要 Python 3.10+ 且有完整依赖，用系统 Python（有 pyyaml 等）
+    let python = find_hermes_python()?;
+
+    // 修复 Windows embeddable Python 的 _pth 文件（确保 PYTHONPATH 生效）
+    #[cfg(target_os = "windows")]
+    fix_python_pth(&python);
+
+    // 检查 Python 版本（server.py 需要 Python 3.10+）
+    let version_output = std::process::Command::new(&python)
+        .args(["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"])
+        .output()
+        .map_err(|e| format!("获取 Python 版本失败: {}", e))?;
+    if version_output.status.success() {
+        let version_str = String::from_utf8_lossy(&version_output.stdout).trim().to_string();
+        let parts: Vec<&str> = version_str.split('.').collect();
+        if let (Some(major), Some(minor)) = (parts.first(), parts.get(1)) {
+            let major: u32 = major.parse().unwrap_or(0);
+            let minor: u32 = minor.parse().unwrap_or(0);
+            if major < 3 || (major == 3 && minor < 10) {
+                return Err(format!("Python 版本过低 ({})，hermes-workspace 需要 Python 3.10+", version_str));
+            }
+        }
+    }
 
     let config = AppConfig::load()?;
     let api_key = config.effective_api_key();
+
+    // 在 server.py 顶部注入 sys.path 修复，确保 agent 包能被找到
+    // 这是最根本的修复：显式把 hermes-agent/ 加入 sys.path，不依赖 Python 的 cwd/site 行为
+    let patch_marker = "# HERMES_WINDOWS_PATH_FIX";
+    let server_py_content = std::fs::read_to_string(&server_py).unwrap_or_default();
+    if !server_py_content.contains(patch_marker) {
+        let agent_dir_str = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let patch = format!(
+            "{}\nimport sys\nfrom pathlib import Path\n_agent_dir = Path('{}')\nif str(_agent_dir) not in sys.path:\n    sys.path.insert(0, str(_agent_dir))\n\n",
+            patch_marker, agent_dir_str
+        );
+        let new_content = patch + &server_py_content;
+        let _ = std::fs::write(&server_py, new_content);
+    }
 
     // 日志文件
     let log_path = data_dir.join("webui-server.log");
     let log_file = std::fs::File::create(&log_path)
         .map_err(|e| format!("创建 WebUI 日志文件失败: {}", e))?;
 
-    // bootstrap.py 从 webui_dir 运行，discovery 逻辑自动找到同级的 hermes-agent/
+    // server.py 直接启动 Web UI（bootstrap.py 不支持 Windows native）
+    // 原始设计：server.py 在 hermes-workspace/ 但 cwd 设为 hermes-agent/
+    // 这样 Python 自动把脚本目录（hermes-workspace/）和 cwd（hermes-agent/）都加入 sys.path
     let mut cmd = std::process::Command::new(&python);
-    cmd.arg(&bootstrap_py)
-        .arg("--port").arg(WEBUI_PORT.to_string())
-        .arg("--no-browser")
+    cmd.arg(&server_py)
         .env("HERMES_WEBUI_HOST", "127.0.0.1")
+        .env("HERMES_WEBUI_PORT", WEBUI_PORT.to_string())
         .env("HERMES_WEBUI_AGENT_DIR", agent_dir.to_string_lossy().as_ref())
         .env("MINIMAX_API_KEY", &api_key)
         .env("MINIMAX_CN_API_KEY", &api_key)
         .env("ANTHROPIC_API_KEY", &api_key)
         .env("OPENAI_API_KEY", &api_key)
         .env("PYTHONUNBUFFERED", "1")
-        .current_dir(&webui_dir)
+        .current_dir(&agent_dir)
         .stdout(Stdio::null())
         .stderr(log_file);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
     let mut child = cmd.spawn().map_err(|e| format!("启动 Hermes WebUI 失败: {}", e))?;
+    let pid = child.id();
+
+    // 将 WebUI server 进程存入全局状态，主程序关闭时自动 kill
+    if let Some(state) = app_handle.try_state::<AppState>() {
+        let mut guard = state.webui_process.lock().unwrap();
+        *guard = Some(child);
+        drop(guard);
+    }
 
     // 等待就绪（最多 30s），同时监控进程是否提前崩溃
     for i in 0..15 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
-                let trimmed = stderr_log.trim();
-                let detail = if trimmed.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n--- stderr 日志 ---\n{}", trimmed)
-                };
-                return Err(format!(
-                    "Hermes WebUI 进程异常退出 (code: {:?}, 第 {} 秒){}",
-                    status.code(),
-                    (i + 1) * 2,
-                    detail
-                ));
+        // 从全局状态检查进程存活
+        {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                let mut guard = state.webui_process.lock().unwrap();
+                if let Some(ref mut child) = *guard {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                            let trimmed = stderr_log.trim();
+                            let detail = if trimmed.is_empty() {
+                                String::new()
+                            } else {
+                                format!("\n--- stderr 日志 ---\n{}", trimmed)
+                            };
+                            return Err(format!(
+                                "Hermes WebUI 进程异常退出 (code: {:?}, 第 {} 秒){}",
+                                status.code(),
+                                (i + 1) * 2,
+                                detail
+                            ));
+                        }
+                        Ok(None) => {} // 仍在运行
+                        Err(e) => return Err(format!("检查 WebUI 进程状态失败: {}", e)),
+                    }
+                }
             }
-            Ok(None) => {} // 仍在运行
-            Err(e) => return Err(format!("检查 WebUI 进程状态失败: {}", e)),
         }
 
         if client.get(&url).send().await.is_ok() {
@@ -2211,7 +2567,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     } else {
         format!("\n--- stderr 日志 ---\n{}", trimmed)
     };
-    Err(format!("Hermes WebUI (端口 {WEBUI_PORT}) 启动超时 (30s){}", detail))
+    Err(format!("Hermes WebUI (PID:{}) 启动超时 (30s){}", pid, detail))
 }
 
 /// 启动管理后台，返回 URL（内嵌显示，不弹窗）
@@ -2281,6 +2637,23 @@ async fn open_chat_window(app_handle: tauri::AppHandle) -> Result<serde_json::Va
     }))
 }
 
+/// 启动 AI 对话，用系统默认浏览器打开 Hermes WebUI
+/// 第三版方案：浏览器访问 localhost:8787，关闭主程序即停止服务
+#[tauri::command]
+async fn open_chat_window_popup(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let port = ensure_webui_server(&app_handle).await?;
+    let url = format!("http://127.0.0.1:{}", port);
+
+    open::that(&url).map_err(|e| format!("打开浏览器失败: {}", e))?;
+    Ok(())
+}
+
+/// 获取软件版本号
+#[tauri::command]
+fn get_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 // ============ Main ============
 
 fn main() {
@@ -2288,6 +2661,7 @@ fn main() {
         .manage(AppState {
             hermes_ready: Mutex::new(false),
             chat_history: Mutex::new(Vec::new()),
+            webui_process: Mutex::new(None),
         })
         .manage(HermesChatState::new())
         .plugin(tauri_plugin_opener::init())
@@ -2307,6 +2681,8 @@ fn main() {
             hermes_chat_send,
             open_management_backend,
             open_chat_window,
+            open_chat_window_popup,
+            get_version,
             save_api_config,
             get_api_config,
             save_feishu_config,
@@ -2317,9 +2693,18 @@ fn main() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                // Clean up the Hermes chat server process
+                // Clean up the Hermes chat server process (port 9120)
                 if let Some(state) = window.try_state::<HermesChatState>() {
                     let mut guard = state.process.lock().unwrap();
+                    if let Some(ref mut child) = *guard {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+                // Clean up the WebUI server process (port 8787)
+                // 关闭主程序即停止 AI 对话服务，防止用户绕过软件直接使用浏览器
+                if let Some(state) = window.try_state::<AppState>() {
+                    let mut guard = state.webui_process.lock().unwrap();
                     if let Some(ref mut child) = *guard {
                         let _ = child.kill();
                         let _ = child.wait();
