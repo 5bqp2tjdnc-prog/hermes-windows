@@ -2531,7 +2531,8 @@ async fn open_management_backend(_app_handle: tauri::AppHandle) -> Result<(), St
     let hermes = find_hermes_agent()?;
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
 
-    let web_dist = agent_dir.join("web_dist");
+    // web_dist 实际位于 hermes-agent/hermes_cli/web_dist/
+    let web_dist = agent_dir.join("hermes_cli").join("web_dist");
     if !web_dist.exists() {
         return Err("管理后台前端文件未找到，请先安装运行环境".to_string());
     }
