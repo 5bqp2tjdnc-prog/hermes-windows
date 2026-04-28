@@ -2532,9 +2532,27 @@ async fn open_management_backend(_app_handle: tauri::AppHandle) -> Result<(), St
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
 
     // web_dist 实际位于 hermes-agent/hermes_cli/web_dist/
-    let web_dist = agent_dir.join("hermes_cli").join("web_dist");
-    if !web_dist.exists() {
+    let web_dist_candidate = agent_dir.join("hermes_cli").join("web_dist");
+    if !web_dist_candidate.exists() {
         return Err("管理后台前端文件未找到，请先安装运行环境".to_string());
+    }
+
+    // 确保 web_dist 软链接存在（兼容 hermes_cli.main dashboard 查找路径）
+    let web_dist = agent_dir.join("web_dist");
+    if !web_dist.exists() {
+        #[cfg(target_os = "windows")]
+        {
+            std::os::windows::fs::symlink_dir(&web_dist_candidate, &web_dist)
+                .or_else(|_| {
+                    // symlink 失败时复制目录
+                    copy_dir_recursive(&web_dist_candidate, &web_dist)
+                })
+                .ok();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::os::unix::fs::symlink(&web_dist_candidate, &web_dist).ok();
+        }
     }
 
     let mut cmd = std::process::Command::new(&python);
