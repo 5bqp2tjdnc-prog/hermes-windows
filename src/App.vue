@@ -7,7 +7,7 @@
           <span class="logo-icon">☤</span>
           <div class="logo-text">
             <h1 class="logo-title">Hermes</h1>
-            <span class="logo-subtitle">Agent</span>
+            <span class="logo-subtitle">Agent v{{ appVersion }}</span>
           </div>
         </div>
       </div>
@@ -128,8 +128,30 @@
             </div>
             <div class="card-body">
               <p class="guide-text">
-                Hermes Agent 是一款基于 MiniMax M2.7 大模型的 AI 助手软件。支持联网搜索、工具调用和任务执行，提供完整的 AI 对话体验。
+                Hermes Agent 是一款基于 MiniMax M2.7 大模型的 AI 桌面助手软件，封装在轻量化的 Windows 桌面应用中。
+                核心大脑是 Hermes Agent（开源 AI Agent 引擎），软件本身只是外壳，提供便捷的本地入口。
+                已预先配置 MiniMax M2.7 API Key，开箱即用。支持的功能包括：AI 对话、联网搜索、代码执行、文件操作、任务自动化、飞书消息推送等。
               </p>
+            </div>
+          </section>
+
+          <section class="settings-card">
+            <div class="card-header">
+              <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7"/>
+                <rect x="14" y="3" width="7" height="7"/>
+                <rect x="14" y="14" width="7" height="7"/>
+                <rect x="3" y="14" width="7" height="7"/>
+              </svg>
+              <h3>各板块说明</h3>
+            </div>
+            <div class="card-body">
+              <ul class="guide-list">
+                <li><strong>AI 对话</strong>：嵌入 Hermes WebUI，使用 MiniMax M2.7 大模型进行智能对话，支持联网搜索、代码执行、文件操作、工具调用等</li>
+                <li><strong>管理后台</strong>：嵌入 Hermes Dashboard，管理 AI Agent 的会话、记忆、技能、工作流等核心组件</li>
+                <li><strong>使用说明</strong>：本页面，含软件简介、各板块功能、使用流程和联系方式</li>
+                <li><strong>设置</strong>：许可证激活、API 配置（API Key 和模型）、运行环境管理（Python / Hermes Agent / Node.js）、飞书推送、许可证管理</li>
+              </ul>
             </div>
           </section>
 
@@ -309,6 +331,10 @@
                   <span class="info-label">联系方式</span>
                   <span class="info-value" style="color: var(--gold);">微信/电话：13213181166</span>
                 </div>
+                <div class="info-item">
+                  <span class="info-label">软件版本</span>
+                  <span class="info-value">v{{ appVersion }}</span>
+                </div>
               </div>
               <button class="btn btn-danger" @click="doDeactivate">注销许可证</button>
             </div>
@@ -383,13 +409,15 @@
                     <span class="check-dot"></span>
                     {{ envStatus.python_ok ? '已找到' : '未找到' }}
                   </span>
-                  <span class="env-check-path">{{ envStatus.python_path || '-' }}</span>
+                  <span class="env-check-path">{{ envStatus.python_path || '自动下载 Python 3.10' }}</span>
                 </div>
-                <div class="env-item" v-if="!envStatus.python_ok">
-                  <span class="env-hint">首次使用需安装 Python 3.11+</span>
-                  <a class="btn btn-sm btn-outline" href="https://www.python.org/downloads/" target="_blank">
-                    下载 Python
-                  </a>
+                <div class="env-item">
+                  <span class="env-check-label">pip 包</span>
+                  <span class="env-check-status" :class="envStatus.deps_ok ? 'ok' : 'fail'">
+                    <span class="check-dot"></span>
+                    {{ envStatus.deps_ok ? '已安装' : '未安装' }}
+                  </span>
+                  <span class="env-check-path">pyyaml fastapi uvicorn</span>
                 </div>
                 <div class="env-item">
                   <span class="env-check-label">Hermes Agent</span>
@@ -407,12 +435,6 @@
                   </span>
                   <span class="env-check-path">{{ envStatus.node_version || '管理后台需要' }}</span>
                 </div>
-                <div class="env-item" v-if="!envStatus.node_ok">
-                  <span class="env-hint">管理后台需要 Node.js，可自动下载安装</span>
-                  <button class="btn btn-sm btn-primary" @click="setupNodejs" :disabled="isInstallingNode">
-                    {{ isInstallingNode ? '安装中...' : '安装 Node.js' }}
-                  </button>
-                </div>
                 <div class="env-item" v-if="envStatus.version">
                   <span class="env-check-label">版本</span>
                   <span class="env-check-status ok">{{ envStatus.version }}</span>
@@ -423,14 +445,14 @@
                   <span v-if="envChecking" class="btn-spinner"></span>
                   重新检查
                 </button>
-                <button v-if="!envStatus.agent_ok" class="btn btn-primary" @click="setupEnvironment" :disabled="isSettingUp || !envStatus.python_ok">
+                <button class="btn btn-primary" @click="setupEnvironment" :disabled="isSettingUp">
                   <span v-if="isSettingUp" class="btn-spinner"></span>
-                  {{ isSettingUp ? '安装中...' : '下载安装 Hermes Agent' }}
+                  {{ isSettingUp ? '安装中...' : '一键安装全部运行环境' }}
                 </button>
               </div>
               <div class="env-overall" :class="envStatus.ready ? 'ready' : 'not-ready'">
                 <span class="overall-dot"></span>
-                {{ envStatus.ready ? '运行环境就绪，可以开始对话' : '运行环境未就绪' }}
+                {{ envStatus.ready ? '运行环境就绪，可以开始对话' : '运行环境未就绪，请点击"一键安装全部运行环境"' }}
               </div>
             </div>
           </section>
@@ -488,7 +510,7 @@ import { relaunch } from '@tauri-apps/plugin-process'
 type View = 'chat' | 'dashboard' | 'guide' | 'settings'
 const currentView = ref<View>('guide')
 // URLs (filled by invoke calls)
-const chatUrl = ref('http://127.0.0.1:9122')
+const chatUrl = ref('http://127.0.0.1:8787')
 const dashboardUrl = ref('http://127.0.0.1:9119')
 
 // License
@@ -530,7 +552,7 @@ const apiConfig = ref({
 // Environment
 const envChecking = ref(false)
 const isSettingUp = ref(false)
-const isInstallingNode = ref(false)
+const appVersion = ref('')
 const envStatus = ref({
   python_ok: false,
   agent_ok: false,
@@ -540,6 +562,7 @@ const envStatus = ref({
   agent_path: '',
   version: '',
   ready: false,
+  deps_ok: false,
 })
 
 // ============ Computed ============
@@ -612,11 +635,8 @@ async function copyMachineCode() {
 // ============ View Navigation ============
 async function openChatView() {
   try {
-    const result: any = await invoke('open_chat_window')
-    if (result.url) {
-      chatUrl.value = result.url
-    }
-    currentView.value = 'chat'
+    // 弹窗模式：打开独立窗口加载 AI 对话
+    await invoke('open_chat_window_popup')
   } catch (e: any) {
     showToast('启动对话失败: ' + e, 'error')
   }
@@ -624,11 +644,8 @@ async function openChatView() {
 
 async function openDashboardView() {
   try {
-    const result: any = await invoke('open_management_backend')
-    if (result.url) {
-      dashboardUrl.value = result.url
-    }
-    currentView.value = 'dashboard'
+    await invoke('open_management_backend')
+    showToast('管理后台已在浏览器中打开', 'success')
   } catch (e: any) {
     showToast('启动管理后台失败: ' + e, 'error')
   }
@@ -701,19 +718,6 @@ async function setupEnvironment() {
   }
 }
 
-async function setupNodejs() {
-  isInstallingNode.value = true
-  try {
-    const result: any = await invoke('setup_nodejs')
-    showToast(result.message, 'success')
-    await checkEnvironment()
-  } catch (e: any) {
-    showToast('安装 Node.js 失败: ' + e, 'error')
-  } finally {
-    isInstallingNode.value = false
-  }
-}
-
 // ============ Update ============
 const updateInfo = ref<{
   available: boolean
@@ -766,6 +770,9 @@ async function downloadUpdate() {
 
 // ============ Init ============
 onMounted(async () => {
+  try {
+    appVersion.value = await invoke('get_version')
+  } catch {}
   await Promise.all([loadLicenseInfo(), loadApiConfig()])
   checkEnvironment()
   checkForUpdates()
