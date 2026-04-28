@@ -2540,43 +2540,54 @@ async fn open_management_backend(_app_handle: tauri::AppHandle) -> Result<(), St
     // 确保 web_dist 软链接存在（兼容 hermes_cli.main dashboard 查找路径）
     let web_dist = agent_dir.join("web_dist");
     if !web_dist.exists() {
-        #[cfg(target_os = "windows")]
-        {
-            std::os::windows::fs::symlink_dir(&web_dist_candidate, &web_dist)
-                .or_else(|_| {
-                    // symlink 失败时复制目录
-                    copy_dir_recursive(&web_dist_candidate, &web_dist)
-                })
-                .ok();
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            std::os::unix::fs::symlink(&web_dist_candidate, &web_dist).ok();
-        }
+        // 软链接失败时复制整个目录
+        copy_dir_recursive(&web_dist_candidate, &web_dist)
+            .map_err(|e| format!("创建 web_dist 目录失败: {}", e))?;
     }
+
+    // 写入日志文件用于调试
+    let log_path = agent_dir.join("dashboard_startup.log");
+    let _log_file = std::fs::File::create(&log_path).ok();
 
     let mut cmd = std::process::Command::new(&python);
     cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", "9119", "--no-open"])
         .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
         .env("PYTHONPATH", agent_dir.to_string_lossy().to_string())
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    let _child = cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
 
     // 等待端口就绪（最多 30s）
-    for _ in 0..60 {
+    for i in 0..60 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         if is_port_ready(DASHBOARD_PORT).await {
+            let _ = std::fs::remove_file(&log_path);
             open::that(&dashboard_url).map_err(|e| format!("打开浏览器失败: {}", e))?;
             return Ok(());
         }
+        // 调试：每 10 次检查子进程是否已退出（失败）
+        if i % 10 == 9 {
+            if let Some(status) = child.try_wait().unwrap_or(None) {
+                let mut msg = format!("Dashboard 进程提前退出，状态码: {:?}\n", status);
+                if let Some(ref mut out) = child.stdout {
+                    let mut s = String::new();
+                    if out.read_to_string(&mut s).is_ok() { msg.push_str(&format!("stdout: {}\n", s)); }
+                }
+                if let Some(ref mut err) = child.stderr {
+                    let mut s = String::new();
+                    if err.read_to_string(&mut s).is_ok() { msg.push_str(&format!("stderr: {}\n", s)); }
+                }
+                let _ = std::fs::write(&log_path, &msg);
+                return Err(msg);
+            }
+        }
     }
 
-    Err("Dashboard 启动超时，请检查运行环境是否完整".to_string())
+    Err("Dashboard 启动超时，请检查 dashboard_startup.log".to_string())
 }
 
 /// 启动 AI 对话，内嵌完整的 Hermes WebUI，返回 URL
