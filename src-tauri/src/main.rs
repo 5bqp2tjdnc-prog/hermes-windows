@@ -2299,19 +2299,26 @@ async fn hermes_chat_send(message: String, app_handle: tauri::AppHandle) -> Resu
     Ok(ChatResult { response, session_id: String::new() })
 }
 
-/// 确保 Hermes WebUI（vanilla JS 对话界面）正在运行（端口 9122）
-/// hermes-agent.zip 打包了 hermes-agent/ 和 hermes-workspace/ 两个同级目录
+/// 快速检测本地端口是否已可访问
+async fn is_port_ready(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}", port);
+    match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client.get(&url).send().await.is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// 确保 Hermes WebUI（vanilla JS 对话界面）正在运行（端口 8787）
+/// 第四版方案：服务独立运行，主程序关闭不停止服务
 async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, String> {
     const WEBUI_PORT: u16 = 8787;
     let url = format!("http://127.0.0.1:{WEBUI_PORT}");
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|_| "HTTP 客户端错误")?;
-
-    // 检查是否已在运行
-    if client.get(&url).send().await.is_ok() {
+    // 如果端口已就绪，直接返回
+    if is_port_ready(WEBUI_PORT).await {
         return Ok(WEBUI_PORT);
     }
 
@@ -2338,7 +2345,6 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
 
     // 如果 hermes-workspace 不存在，说明未解压，从 resources 解压
     if webui_dir.as_ref().map(|p| !p.exists()).unwrap_or(true) {
-        // 找 hermes-agent.zip
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -2371,7 +2377,6 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
                 .output()
                 .map_err(|e| format!("解压 hermes-agent.zip 失败: {}", e))?;
         }
-        // 写入版本戳，标记解压完成
         let _ = std::fs::write(&version_stamp, &current_version);
     }
 
@@ -2421,7 +2426,6 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
                     .output();
             }
         }
-        // 重新定位
         let agent_exe = find_hermes_agent()?;
         let agent_dir = agent_exe.parent().ok_or("无法获取 Hermes Agent 目录")?;
         let webui_dir = agent_dir.parent()
@@ -2434,12 +2438,9 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     }
 
     // 终极修复：把 hermes-agent/agent 复制到 hermes-workspace/agent
-    // 这样 server.py 在 hermes-workspace/ 下运行时，当前目录直接有 agent 包
-    // 彻底绕过 sys.path、cwd、site 模块等一切不确定性
     let src_agent = agent_dir.join("agent");
     let dst_agent = webui_dir.join("agent");
     if src_agent.exists() {
-        // 强制重新复制：删除旧的（可能不完整的）副本，确保每次都用最新文件
         if dst_agent.exists() {
             let _ = std::fs::remove_dir_all(&dst_agent);
         }
@@ -2448,10 +2449,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         }
     }
 
-    // server.py 需要 Python 3.10+ 且有完整依赖，用系统 Python（有 pyyaml 等）
     let python = find_hermes_python()?;
-
-    // 修复 Windows embeddable Python 的 _pth 文件（确保 PYTHONPATH 生效）
     #[cfg(target_os = "windows")]
     fix_python_pth(&python);
 
@@ -2475,8 +2473,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     let config = AppConfig::load()?;
     let api_key = config.effective_api_key();
 
-    // 在 server.py 顶部注入 sys.path 修复，确保 agent 包能被找到
-    // 这是最根本的修复：显式把 hermes-agent/ 加入 sys.path，不依赖 Python 的 cwd/site 行为
+    // 在 server.py 顶部注入 sys.path 修复
     let patch_marker = "# HERMES_WINDOWS_PATH_FIX";
     let server_py_content = std::fs::read_to_string(&server_py).unwrap_or_default();
     if !server_py_content.contains(patch_marker) {
@@ -2485,18 +2482,10 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
             "{}\nimport sys\nfrom pathlib import Path\n_agent_dir = Path('{}')\nif str(_agent_dir) not in sys.path:\n    sys.path.insert(0, str(_agent_dir))\n\n",
             patch_marker, agent_dir_str
         );
-        let new_content = patch + &server_py_content;
-        let _ = std::fs::write(&server_py, new_content);
+        let _ = std::fs::write(&server_py, patch + &server_py_content);
     }
 
-    // 日志文件
-    let log_path = data_dir.join("webui-server.log");
-    let log_file = std::fs::File::create(&log_path)
-        .map_err(|e| format!("创建 WebUI 日志文件失败: {}", e))?;
-
-    // server.py 直接启动 Web UI（bootstrap.py 不支持 Windows native）
-    // 原始设计：server.py 在 hermes-workspace/ 但 cwd 设为 hermes-agent/
-    // 这样 Python 自动把脚本目录（hermes-workspace/）和 cwd（hermes-agent/）都加入 sys.path
+    // 第四版方案：启动 WebUI server 进程（完全独立运行，主程序关闭不停止）
     let mut cmd = std::process::Command::new(&python);
     cmd.arg(&server_py)
         .env("HERMES_WEBUI_HOST", "127.0.0.1")
@@ -2508,74 +2497,36 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         .env("OPENAI_API_KEY", &api_key)
         .env("PYTHONUNBUFFERED", "1")
         .current_dir(&agent_dir)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(log_file);
+        .stderr(Stdio::null());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    let mut child = cmd.spawn().map_err(|e| format!("启动 Hermes WebUI 失败: {}", e))?;
-    let pid = child.id();
+    let _child = cmd.spawn().map_err(|e| format!("启动 Hermes WebUI 失败: {}", e))?;
 
-    // 将 WebUI server 进程存入全局状态，主程序关闭时自动 kill
-    if let Some(state) = app_handle.try_state::<AppState>() {
-        let mut guard = state.webui_process.lock().unwrap();
-        *guard = Some(child);
-        drop(guard);
-    }
-
-    // 等待就绪（最多 30s），同时监控进程是否提前崩溃
-    for i in 0..15 {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-        // 从全局状态检查进程存活
-        {
-            if let Some(state) = app_handle.try_state::<AppState>() {
-                let mut guard = state.webui_process.lock().unwrap();
-                if let Some(ref mut child) = *guard {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
-                            let trimmed = stderr_log.trim();
-                            let detail = if trimmed.is_empty() {
-                                String::new()
-                            } else {
-                                format!("\n--- stderr 日志 ---\n{}", trimmed)
-                            };
-                            return Err(format!(
-                                "Hermes WebUI 进程异常退出 (code: {:?}, 第 {} 秒){}",
-                                status.code(),
-                                (i + 1) * 2,
-                                detail
-                            ));
-                        }
-                        Ok(None) => {} // 仍在运行
-                        Err(e) => return Err(format!("检查 WebUI 进程状态失败: {}", e)),
-                    }
-                }
-            }
-        }
-
-        if client.get(&url).send().await.is_ok() {
+    // 等待端口就绪（最多 30 秒）
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if is_port_ready(WEBUI_PORT).await {
             return Ok(WEBUI_PORT);
         }
     }
 
-    let stderr_log = std::fs::read_to_string(&log_path).unwrap_or_default();
-    let trimmed = stderr_log.trim();
-    let detail = if trimmed.is_empty() {
-        String::new()
-    } else {
-        format!("\n--- stderr 日志 ---\n{}", trimmed)
-    };
-    Err(format!("Hermes WebUI (PID:{}) 启动超时 (30s){}", pid, detail))
+    Err("Hermes WebUI 启动超时，请检查运行环境是否完整".to_string())
 }
 
-/// 启动管理后台，返回 URL（内嵌显示，不弹窗）
+/// 第四版方案：启动管理后台（完全独立运行，主程序关闭不停止），用系统默认浏览器打开
 #[tauri::command]
-async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let dashboard_url = "http://127.0.0.1:9119";
+async fn open_management_backend(_app_handle: tauri::AppHandle) -> Result<(), String> {
+    const DASHBOARD_PORT: u16 = 9119;
+    let dashboard_url = format!("http://127.0.0.1:{}", DASHBOARD_PORT);
 
-    // 先启动 Dashboard 服务
+    if is_port_ready(DASHBOARD_PORT).await {
+        open::that(&dashboard_url).map_err(|e| format!("打开浏览器失败: {}", e))?;
+        return Ok(());
+    }
+
     let python = find_hermes_python()?;
     let hermes = find_hermes_agent()?;
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
@@ -2585,44 +2536,28 @@ async fn open_management_backend(app_handle: tauri::AppHandle) -> Result<serde_j
         return Err("管理后台前端文件未找到，请先安装运行环境".to_string());
     }
 
-    // 检查 Dashboard 是否已经在运行
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|_| "HTTP 客户端错误")?;
+    let mut cmd = std::process::Command::new(&python);
+    cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", "9119", "--no-open"])
+        .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
+        .env("PYTHONPATH", agent_dir.to_string_lossy().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
 
-    let already_running = client.get(&format!("{}/api/status", dashboard_url)).send().await.is_ok();
+    let _child = cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
 
-    if !already_running {
-        let mut cmd = std::process::Command::new(&python);
-        cmd.args(["-m", "hermes_cli.main", "dashboard", "--port", "9119", "--no-open"])
-            .env("HERMES_WEB_DIST", web_dist.to_string_lossy().to_string())
-            .env("PYTHONPATH", agent_dir.to_string_lossy().to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000);
-
-        cmd.spawn().map_err(|e| format!("启动 Dashboard 失败: {}", e))?;
-
-        // 等待就绪（最多 30s）
-        let mut ready = false;
-        for _ in 0..15 {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if client.get(&format!("{}/api/status", dashboard_url)).send().await.is_ok() {
-                ready = true;
-                break;
-            }
-        }
-        if !ready {
-            return Err("Dashboard 启动超时 (30s)".to_string());
+    // 等待端口就绪（最多 30s）
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if is_port_ready(DASHBOARD_PORT).await {
+            open::that(&dashboard_url).map_err(|e| format!("打开浏览器失败: {}", e))?;
+            return Ok(());
         }
     }
 
-    Ok(serde_json::json!({
-        "success": true,
-        "url": dashboard_url,
-    }))
+    Err("Dashboard 启动超时，请检查运行环境是否完整".to_string())
 }
 
 /// 启动 AI 对话，内嵌完整的 Hermes WebUI，返回 URL
@@ -2691,26 +2626,8 @@ fn main() {
             setup_hermes_environment,
             setup_nodejs,
         ])
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                // Clean up the Hermes chat server process (port 9120)
-                if let Some(state) = window.try_state::<HermesChatState>() {
-                    let mut guard = state.process.lock().unwrap();
-                    if let Some(ref mut child) = *guard {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                }
-                // Clean up the WebUI server process (port 8787)
-                // 关闭主程序即停止 AI 对话服务，防止用户绕过软件直接使用浏览器
-                if let Some(state) = window.try_state::<AppState>() {
-                    let mut guard = state.webui_process.lock().unwrap();
-                    if let Some(ref mut child) = *guard {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                }
-            }
+        .on_window_event(|_window, _event| {
+            // 第四版方案：服务进程完全独立运行，主程序关闭时不停止后台服务
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
