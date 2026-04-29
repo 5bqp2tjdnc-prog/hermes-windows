@@ -666,7 +666,17 @@ const apiConfig = ref({
 // Environment
 const envChecking = ref(false)
 const isSettingUp = ref(false)
-const envStatus = ref<any>({})
+const envStatus = ref<any>({
+  python_ok: false,
+  agent_ok: false,
+  node_ok: false,
+  node_version: '',
+  python_path: '',
+  agent_path: '',
+  version: '',
+  ready: false,
+  deps_ok: false,
+})
 
 // Package management
 const packageList = ref<any[]>([])
@@ -724,20 +734,7 @@ async function uninstallPkg(id: string) {
     showToast('卸载失败: ' + e, 'error')
   } finally {
     uninstallingPkg.value = null
-  }
 }
-
-const envStatus = ref<any>({
-  python_ok: false,
-  agent_ok: false,
-  node_ok: false,
-  node_version: '',
-  python_path: '',
-  agent_path: '',
-  version: '',
-  ready: false,
-  deps_ok: false,
-})
 
 // ============ Computed ============
 const envReady = computed(() => envStatus.value.ready)
