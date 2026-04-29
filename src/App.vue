@@ -478,6 +478,43 @@
             </div>
           </section>
 
+          <!-- Access Links Section -->
+          <section class="settings-card">
+            <div class="card-header">
+              <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+                <polyline points="15 3 21 3 21 9"/>
+                <line x1="10" y1="14" x2="21" y2="3"/>
+              </svg>
+              <h3>访问入口</h3>
+            </div>
+            <div class="card-body">
+              <div class="access-links">
+                <div class="access-item">
+                  <div class="access-info">
+                    <span class="access-name">AI 对话</span>
+                    <span class="access-desc">启动聊天界面，进行 AI 智能对话</span>
+                    <code class="access-url">http://127.0.0.1:8787</code>
+                  </div>
+                  <button class="btn btn-primary" @click="openChatWindow" :disabled="!envStatus.agent_ok">
+                    打开
+                  </button>
+                </div>
+                <div class="access-item">
+                  <div class="access-info">
+                    <span class="access-name">管理后台</span>
+                    <span class="access-desc">管理 AI Agent 的会话、记忆、技能、工作流等</span>
+                    <code class="access-url">http://127.0.0.1:9119</code>
+                  </div>
+                  <button class="btn btn-primary" @click="openDashboard" :disabled="!envStatus.agent_ok">
+                    打开
+                  </button>
+                </div>
+              </div>
+              <p class="access-tip">⚠️ 请先确保运行环境已就绪（上方的绿色勾勾全部亮起）</p>
+            </div>
+          </section>
+
           <!-- Feishu Section -->
           <section class="settings-card">
             <div class="card-header">
@@ -522,7 +559,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
@@ -563,11 +600,25 @@ const appVersion = ref('')
 // API Config
 const apiConfig = ref({
   api_key: '',
-  api_base: 'https://api.minimaxi.com/v1',
+  api_base: 'https://api.minimaxi.com/anthropic',
   model: 'MiniMax-M2.7-highspeed',
   feishu_app_id: '',
   feishu_app_secret: '',
   feishu_chat_id: '',
+})
+
+// 模型 → base URL 映射（选了模型后自动填入对应地址）
+watch(() => apiConfig.value.model, (model) => {
+  const baseMap: Record<string, string> = {
+    'MiniMax-M2.7-highspeed': 'https://api.minimaxi.com/anthropic',
+    'MiniMax-Text-01': 'https://api.minimaxi.com/anthropic',
+    'OpenAI/gpt-4o': 'https://api.openai.com/v1',
+    'claude-sonnet-4': 'https://api.anthropic.com',
+    'claude-opus-4': 'https://api.anthropic.com',
+  }
+  if (baseMap[model]) {
+    apiConfig.value.api_base = baseMap[model]
+  }
 })
 
 // Environment
@@ -659,6 +710,22 @@ async function saveApiConfig() {
     showToast('API 配置已保存', 'success')
   } catch (e: any) {
     showToast('保存失败: ' + e, 'error')
+  }
+}
+
+async function openChatWindow() {
+  try {
+    await invoke('open_chat_window_popup')
+  } catch (e: any) {
+    showToast('打开失败: ' + e, 'error')
+  }
+}
+
+async function openDashboard() {
+  try {
+    await invoke('open_management_backend')
+  } catch (e: any) {
+    showToast('打开失败: ' + e, 'error')
   }
 }
 
@@ -2180,6 +2247,53 @@ html, body {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.access-links {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.access-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.access-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.access-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.access-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.access-url {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: monospace;
+  margin-top: 4px;
+}
+
+.access-tip {
+  font-size: 12px;
+  color: var(--warning);
+  margin: 0;
 }
 
 .btn-sm {

@@ -955,7 +955,10 @@ fn run_chat_stream_impl(
     prompt: &str,
     session_id: &str,
     api_key: &str,
-    app_handle: &tauri::AppHandle,
+    feishu_app_id: &str,
+    feishu_app_secret: &str,
+    feishu_chat_id: &str,
+    _app_handle: &tauri::AppHandle,
 ) -> Result<(String, String), String> {
     let mut cmd = new_python_cmd(python);
 
@@ -966,7 +969,10 @@ fn run_chat_stream_impl(
         .env("HERMES_Q", prompt)
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUNBUFFERED", "1");
+        .env("PYTHONUNBUFFERED", "1")
+        .env("FEISHU_APP_ID", feishu_app_id)
+        .env("FEISHU_APP_SECRET", feishu_app_secret)
+        .env("FEISHU_CHAT_ID", feishu_chat_id);
 
     if let Some(agent_dir) = hermes.parent() {
         let agent_dir_escaped = agent_dir.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
@@ -1081,7 +1087,17 @@ async fn chat_stream(prompt: String, session_id: String, app_handle: tauri::AppH
         if api_key.is_empty() {
             return Err("请先在设置中配置 API Key，或联系作者获取内置 Key".to_string());
         }
-        run_chat_stream_impl(&python, &hermes, &prompt, &session_id, &api_key, &app_handle)
+        run_chat_stream_impl(
+            &python,
+            &hermes,
+            &prompt,
+            &session_id,
+            &api_key,
+            &config.feishu_app_id,
+            &config.feishu_app_secret,
+            &config.feishu_chat_id,
+            &app_handle,
+        )
     })
     .await
     .map_err(|e| format!("内部线程错误: {}", e))?;
