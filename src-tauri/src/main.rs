@@ -958,7 +958,7 @@ fn run_chat_stream_impl(
     feishu_app_id: &str,
     feishu_app_secret: &str,
     feishu_chat_id: &str,
-    _app_handle: &tauri::AppHandle,
+    app_handle: &tauri::AppHandle,
 ) -> Result<(String, String), String> {
     let mut cmd = new_python_cmd(python);
 
