@@ -3,12 +3,11 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, Manager};
-use futures_util::StreamExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -87,40 +86,6 @@ const ACTIVATION_SALT: &[u8] = b"HermesAI_v1_2025";
 const LICENSE_FILE: &str = "license.dat";
 const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic";
 const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
-const PKG_SERVER: &str = "http://175.27.242.158:5000";
-
-// 内置
-fn require_license() -> Result<(), String> {
-    let license_path = get_data_dir()?.join(LICENSE_FILE);
-    if !license_path.exists() {
-        return Err("软件未激活，请先激活许可证".to_string());
-    }
-    let saved_key = std::fs::read_to_string(&license_path)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if saved_key.is_empty() {
-        return Err("软件未激活，请先激活许可证".to_string());
-    }
-    Ok(())
-}
-
-/// 获取当前时间 ISO 格式
-fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let secs = now.as_secs();
-    // 简单转日期字符串（不引入chrono依赖）
-    let days = secs / 86400;
-    let base = 1970i64;
-    let mut year = base;
-    loop {
-        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 366 } else { 365 };
-        if days < days_in_year { break; }
-        year += 1;
-    }
-    format!("{}", year)
-}
 
 // 内置 MiniMax API Key（发布前确认额度充足）
 const BUILTIN_API_KEY: &str = "sk-cp-_2yFksEQQQrzpyKNpNsPD7fiPiKbsOXJDLTfOwQdWDLZQro_iuG_UUFbrQOn9-g_WJPQtpf-MCx02bv89LYyhy6pI40TjrelWji--aLVNTN6fePCY64Udi0"; // MiniMax-M2.7-highspeed
@@ -155,7 +120,7 @@ fn decode_output(bytes: &[u8]) -> String {
 
 /// 创建静默命令（Windows 下加 CREATE_NO_WINDOW）
 fn silent_cmd(program: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new(program);
+    let cmd = std::process::Command::new(program);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
     cmd
@@ -334,7 +299,7 @@ impl AppConfig {
 /// 创建一个配置好的 Python 进程 Command。
 /// 如果找到的是 `py.exe`（Python Launcher），会自动添加 `-3` 参数。
 fn new_python_cmd(python: &Path) -> std::process::Command {
-    let mut cmd = std::process::Command::new(python);
+    let cmd = std::process::Command::new(python);
     #[cfg(target_os = "windows")]
     {
         if let Some(name) = python.file_name().and_then(|n| n.to_str()) {
@@ -555,11 +520,6 @@ fn find_hermes_python() -> Result<PathBuf, String> {
     }
 
     Err("未找到 Python，请先安装 Python 3.10+".to_string())
-}
-
-/// 获取捆绑 Python 目录（用于自动下载场景）
-fn get_bundled_python_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("python")
 }
 
 /// 修复 Windows embeddable Python 的 _pth 文件，确保 PYTHONPATH 生效
@@ -1964,7 +1924,7 @@ fn setup_node_path(cmd: &mut std::process::Command) {
 
 /// 启动 Hermes Agent Dashboard 并在浏览器中打开
 #[tauri::command]
-async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+async fn launch_dashboard(_app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let python = find_hermes_python()?;
     let hermes = find_hermes_agent()?;
     let agent_dir = hermes.parent().ok_or("无法获取 Hermes Agent 目录")?;
@@ -2118,7 +2078,7 @@ async fn launch_dashboard(app_handle: tauri::AppHandle) -> Result<serde_json::Va
 
     let mut ready = false;
     let mut last_error = String::new();
-    for i in 0..15 {
+    for _i in 0..15 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         // 检查进程是否仍然存活
@@ -2365,7 +2325,7 @@ async fn is_port_ready(port: u16) -> bool {
 /// 第四版方案：服务独立运行，主程序关闭不停止服务
 async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, String> {
     const WEBUI_PORT: u16 = 8787;
-    let url = format!("http://127.0.0.1:{WEBUI_PORT}");
+    let _url = format!("http://127.0.0.1:{WEBUI_PORT}");
 
     // 如果端口已就绪，直接返回
     if is_port_ready(WEBUI_PORT).await {
