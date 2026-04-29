@@ -1,6 +1,6 @@
 [package]
 name = "hermes-windows"
-version = "2.0.1"
+version = "2.0.2"
 description = "Hermes AI Desktop Client"
 authors = ["Hermes"]
 edition = "2021"
