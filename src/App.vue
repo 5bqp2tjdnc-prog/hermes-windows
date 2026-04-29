@@ -1,5 +1,61 @@
 <template>
-  <div class="app">
+  <!-- Activation Overlay (Full screen, blocks everything until activated) -->
+  <div v-if="!licenseInfo.activated" class="activation-overlay">
+    <div class="activation-box">
+      <div class="activation-header">
+        <span class="activation-logo">☤</span>
+        <h1>Hermes Agent <span class="version-tag">v2.0.0</span></h1>
+        <p class="activation-subtitle">激活许可证以继续使用</p>
+      </div>
+
+      <div class="activation-body">
+        <div class="machine-code-section">
+          <label class="input-label">您的机器码</label>
+          <div class="machine-code-box">
+            <code>{{ machineCode || '加载中...' }}</code>
+            <button v-if="machineCode" @click="copyMachineCode" class="copy-btn" title="复制">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="activation-hint">
+          <p>请联系作者获取激活码</p>
+          <p class="contact-info">微信/电话：13213181166</p>
+        </div>
+
+        <div class="activation-input-section">
+          <label class="input-label">输入激活码</label>
+          <input
+            v-model="activationCodeInput"
+            type="text"
+            placeholder="HERMES-XXXX-XXXX-XXXX-XXXX"
+            class="code-input"
+            @keyup.enter="doActivate"
+          />
+        </div>
+
+        <button
+          class="activate-btn"
+          @click="doActivate"
+          :disabled="!activationCodeInput.trim() || isActivating"
+        >
+          <span v-if="isActivating" class="btn-spinner"></span>
+          {{ isActivating ? '验证中...' : '激活许可证' }}
+        </button>
+
+        <p v-if="activationMessage" class="activation-msg" :class="activationSuccess ? 'success' : 'error'">
+          {{ activationMessage }}
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App (only rendered when activated) -->
+  <div v-if="licenseInfo.activated" class="app">
     <!-- Left Sidebar -->
     <aside class="sidebar">
       <div class="sidebar-header">
@@ -952,6 +1008,219 @@ onMounted(async () => {
 </script>
 
 <style>
+/* ============ Activation Overlay ============ */
+.activation-overlay {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+  padding: 20px;
+}
+
+.activation-box {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 420px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.activation-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.activation-logo {
+  font-size: 48px;
+  display: block;
+  margin-bottom: 12px;
+}
+
+.activation-header h1 {
+  color: #fff;
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.version-tag {
+  background: rgba(79, 172, 254, 0.2);
+  color: #4facfe;
+  font-size: 14px;
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-weight: 500;
+}
+
+.activation-subtitle {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 14px;
+  margin: 8px 0 0;
+}
+
+.activation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.input-label {
+  display: block;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.machine-code-box {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.machine-code-box code {
+  color: #4facfe;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.copy-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 4px;
+  flex-shrink: 0;
+  display: flex;
+  transition: color 0.2s;
+}
+
+.copy-btn:hover {
+  color: #4facfe;
+}
+
+.copy-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.activation-hint {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.2);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+
+.activation-hint p {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+  margin: 0;
+}
+
+.contact-info {
+  color: #ffc107 !important;
+  font-weight: 600;
+  margin-top: 6px !important;
+}
+
+.code-input {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #fff;
+  font-size: 15px;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 1px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.code-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0;
+  font-family: monospace;
+}
+
+.code-input:focus {
+  border-color: #4facfe;
+  box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.2);
+}
+
+.activate-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  border: none;
+  border-radius: 8px;
+  padding: 14px;
+  color: #1a1a2e;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.activate-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.activate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(26, 26, 46, 0.3);
+  border-top-color: #1a1a2e;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.activation-msg {
+  text-align: center;
+  font-size: 14px;
+  padding: 12px;
+  border-radius: 8px;
+  margin: 0;
+}
+
+.activation-msg.success {
+  background: rgba(0, 201, 87, 0.15);
+  color: #00c957;
+  border: 1px solid rgba(0, 201, 87, 0.3);
+}
+
+.activation-msg.error {
+  background: rgba(255, 82, 82, 0.15);
+  color: #ff5252;
+  border: 1px solid rgba(255, 82, 82, 0.3);
+}
+
 /* ============ Reset & Base ============ */
 *, *::before, *::after {
   margin: 0;
