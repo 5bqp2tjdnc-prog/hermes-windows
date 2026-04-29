@@ -734,6 +734,7 @@ async function uninstallPkg(id: string) {
     showToast('卸载失败: ' + e, 'error')
   } finally {
     uninstallingPkg.value = null
+  }
 }
 
 // ============ Computed ============
