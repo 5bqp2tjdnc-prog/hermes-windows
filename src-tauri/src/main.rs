@@ -87,6 +87,299 @@ const ACTIVATION_SALT: &[u8] = b"HermesAI_v1_2025";
 const LICENSE_FILE: &str = "license.dat";
 const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic";
 const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
+const PKG_SERVER: &str = "http://175.27.242.158:5000";
+
+// 内置
+fn require_license() -> Result<(), String> {
+    let license_path = get_data_dir()?.join(LICENSE_FILE);
+    if !license_path.exists() {
+        return Err("软件未激活，请先激活许可证".to_string());
+    }
+    let saved_key = std::fs::read_to_string(&license_path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if saved_key.is_empty() {
+        return Err("软件未激活，请先激活许可证".to_string());
+    }
+    Ok(())
+}
+
+// ============ Package Management ============
+
+/// 软件包元信息（从服务器获取）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PackageInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub size_mb: u32,
+    pub category: String,  // "runtime" | "tool" | "ai"
+    pub filename: String,
+    pub os: String,       // "windows" | "darwin" | "all"
+}
+
+impl PackageInfo {
+    pub fn applicable(&self) -> bool {
+        let current_os = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            return false;
+        };
+        self.os == "all" || self.os == current_os
+    }
+}
+
+/// 安装状态
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub enum InstallStatus {
+    NotInstalled,
+    Installed,
+    Outdated,
+}
+
+/// 已安装软件包的本地记录
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InstalledPackage {
+    pub id: String,
+    pub version: String,
+    pub install_path: String,
+    pub install_time: String,
+}
+
+/// 获取可安装的软件包列表（从南京云服务器）
+#[tauri::command]
+async fn get_package_list() -> Result<Vec<PackageInfo>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let url = format!("{}/api/packages", PKG_SERVER);
+    let resp = client.get(&url).send().await
+        .map_err(|e| format!("获取软件包列表失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("服务器返回错误: {}", resp.status()));
+    }
+
+    let packages: Vec<PackageInfo> = resp.json().await
+        .map_err(|e| format!("解析软件包列表失败: {}", e))?;
+
+    Ok(packages)
+}
+
+/// 获取本地已安装软件包列表
+#[tauri::command]
+async fn get_installed_packages() -> Result<Vec<InstalledPackage>, String> {
+    let data_dir = get_data_dir()?;
+    let registry_path = data_dir.join("packages.json");
+
+    if !registry_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(&registry_path)
+        .map_err(|e| format!("读取安装记录失败: {}", e))?;
+    let packages: Vec<InstalledPackage> = serde_json::from_str(&content)
+        .map_err(|e| format!("解析安装记录失败: {}", e))?;
+
+    Ok(packages)
+}
+
+/// 统一保存已安装软件包列表
+fn save_installed_packages(packages: &[InstalledPackage]) -> Result<(), String> {
+    let data_dir = get_data_dir()?;
+    let registry_path = data_dir.join("packages.json");
+    let content = serde_json::to_string_pretty(packages)
+        .map_err(|e| format!("序列化安装记录失败: {}", e))?;
+    std::fs::write(&registry_path, content)
+        .map_err(|e| format!("写入安装记录失败: {}", e))?;
+    Ok(())
+}
+
+/// 下载并安装单个软件包
+#[tauri::command]
+async fn download_install_package(
+    package_id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    // 激活码验证
+    require_license()?;
+
+    // 获取包列表
+    let packages = get_package_list().await?;
+    let pkg = packages.iter()
+        .find(|p| p.id == package_id)
+        .ok_or_else(|| format!("未找到软件包: {}", package_id))?;
+
+    if !pkg.applicable() {
+        return Err(format!("该软件包不适用于当前操作系统", ));
+    }
+
+    let data_dir = get_data_dir()?;
+    let pkg_dir = data_dir.join("packages").join(&pkg.id);
+    let zip_path = pkg_dir.join(&pkg.filename);
+    std::fs::create_dir_all(&pkg_dir)
+        .map_err(|e| format!("创建目录失败: {}", e))?;
+
+    // 下载
+    let download_url = format!("{}/download/{}", PKG_SERVER, pkg.filename);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    // 发送进度事件
+    let _ = app_handle.emit("install-progress", serde_json::json!({
+        "package_id": &pkg.id,
+        "status": "downloading",
+        "message": format!("正在下载 {} v{}", pkg.name, pkg.version),
+    }));
+
+    let resp = client.get(&download_url).send().await
+        .map_err(|e| format!("下载失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("下载失败: HTTP {}", resp.status()));
+    }
+
+    let bytes = resp.bytes().await
+        .map_err(|e| format!("读取下载数据失败: {}", e))?
+        .to_vec();
+
+    std::fs::write(&zip_path, &bytes)
+        .map_err(|e| format!("写入文件失败: {}", e))?;
+
+    let _ = app_handle.emit("install-progress", serde_json::json!({
+        "package_id": &pkg.id,
+        "status": "installing",
+        "message": format!("正在安装 {} v{}", pkg.name, pkg.version),
+    }));
+
+    // 解压到 packages/<id>/ 下
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let result = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &format!(
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                zip_path.to_string_lossy(),
+                pkg_dir.to_string_lossy()
+            )])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("解压失败: {}", e))?;
+        if !result.status.success() {
+            return Err(format!("解压失败: {}", decode_output(&result.stderr)));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let result = std::process::Command::new("unzip")
+            .args(["-o", &zip_path.to_string_lossy(), "-d", &pkg_dir.to_string_lossy()])
+            .output()
+            .map_err(|e| format!("解压失败: {}", e))?;
+        if !result.status.success() {
+            return Err(format!("解压失败: {}", decode_output(&result.stderr)));
+        }
+    }
+
+    std::fs::remove_file(&zip_path).ok();
+
+    // 寻找入口文件
+    let install_path = find_package_entry(&pkg_dir, &pkg.id)?;
+
+    // 更新安装记录
+    let mut packages = get_installed_packages().await?;
+    packages.retain(|p| p.id != package_id);
+    packages.push(InstalledPackage {
+        id: package_id.clone(),
+        version: pkg.version.clone(),
+        install_path: install_path.clone(),
+        install_time: chrono_now(),
+    });
+    save_installed_packages(&packages)?;
+
+    let _ = app_handle.emit("install-progress", serde_json::json!({
+        "package_id": &pkg.id,
+        "status": "done",
+        "message": format!("{} v{} 安装成功", pkg.name, pkg.version),
+    }));
+
+    Ok(serde_json::json!({
+        "success": true,
+        "package_id": package_id,
+        "version": pkg.version,
+        "install_path": install_path,
+    }))
+}
+
+/// 卸载软件包
+#[tauri::command]
+async fn uninstall_package(package_id: String) -> Result<serde_json::Value, String> {
+    require_license()?;
+
+    let data_dir = get_data_dir()?;
+    let pkg_dir = data_dir.join("packages").join(&package_id);
+    if pkg_dir.exists() {
+        std::fs::remove_dir_all(&pkg_dir)
+            .map_err(|e| format!("删除目录失败: {}", e))?;
+    }
+
+    // 更新记录
+    let mut packages = get_installed_packages().await?;
+    packages.retain(|p| p.id != package_id);
+    save_installed_packages(&packages)?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "message": format!("卸载成功"),
+    }))
+}
+
+/// 查找软件包的入口可执行文件路径
+fn find_package_entry(pkg_dir: &Path, package_id: &str) -> Result<String, String> {
+    // 常见的入口文件名
+    let entry_names = match package_id {
+        "hermes-agent" => vec!["hermes.exe", "hermes", "cli.py"],
+        "nodejs" => vec!["node.exe", "node"],
+        "python" => vec!["python.exe", "python3"],
+        "rust" => vec!["rustc.exe", "rustc", "cargo.exe", "cargo"],
+        "go" => vec!["go.exe", "go"],
+        _ => vec!["bin", "dist", "out"],
+    };
+
+    for entry in &entry_names {
+        let p = pkg_dir.join(entry);
+        if p.exists() {
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+
+    // 如果没找到，返回 pkg_dir 本身
+    Ok(pkg_dir.to_string_lossy().to_string())
+}
+
+/// 获取当前时间 ISO 格式
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let secs = now.as_secs();
+    // 简单转日期字符串（不引入chrono依赖）
+    let days = secs / 86400;
+    let base = 1970i64;
+    let mut year = base;
+    loop {
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 366 } else { 365 };
+        if days < days_in_year { break; }
+        year += 1;
+    }
+    format!("{}", year)
+}
 
 // 内置 MiniMax API Key（发布前确认额度充足）
 const BUILTIN_API_KEY: &str = "sk-cp-_2yFksEQQQrzpyKNpNsPD7fiPiKbsOXJDLTfOwQdWDLZQro_iuG_UUFbrQOn9-g_WJPQtpf-MCx02bv89LYyhy6pI40TjrelWji--aLVNTN6fePCY64Udi0"; // MiniMax-M2.7-highspeed
