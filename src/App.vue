@@ -40,6 +40,19 @@
         </button>
         <button
           class="nav-item"
+          :class="{ active: currentView === 'packages' }"
+          @click="openPackagesView"
+          :disabled="!envReady"
+        >
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+            <line x1="12" y1="22.08" x2="12" y2="12"/>
+          </svg>
+          软件包
+        </button>
+        <button
+          class="nav-item"
           :class="{ active: currentView === 'guide' }"
           @click="currentView = 'guide'"
         >
@@ -101,6 +114,104 @@
       <!-- 管理后台 (iframe 内嵌) -->
       <div v-else-if="currentView === 'dashboard'" class="iframe-view">
         <iframe :src="dashboardUrl" frameborder="0" class="app-iframe"></iframe>
+      </div>
+
+      <!-- 软件包管理 -->
+      <div v-else-if="currentView === 'packages'" class="settings-view">
+        <div class="settings-header">
+          <h2>
+            <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+              <line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+            软件包管理
+          </h2>
+        </div>
+
+        <div class="settings-grid">
+          <!-- 未激活时禁用 -->
+          <section v-if="!licenseInfo.activated" class="settings-card">
+            <div class="locked-overlay">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="lock-icon">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0110 0v4"/>
+              </svg>
+              <p>请先激活许可证以管理软件包</p>
+            </div>
+          </section>
+
+          <template v-else>
+            <!-- 已安装的软件包 -->
+            <section class="settings-card">
+              <div class="card-header">
+                <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="9 11 12 14 22 4"/>
+                  <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                </svg>
+                <h3>已安装</h3>
+              </div>
+              <div class="card-body">
+                <div v-if="installedPackages.length === 0" class="empty-state">
+                  暂无已安装的软件包
+                </div>
+                <div v-for="pkg in installedPackages" :key="pkg.id" class="package-item installed">
+                  <div class="package-info">
+                    <span class="package-name">{{ pkg.name }}</span>
+                    <span class="package-version">{{ pkg.version }}</span>
+                  </div>
+                  <button @click="uninstallPkg(pkg.id)" class="action-btn uninstall" :disabled="uninstallingPkg === pkg.id">
+                    {{ uninstallingPkg === pkg.id ? '卸载中...' : '卸载' }}
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <!-- 可用软件包 -->
+            <section class="settings-card">
+              <div class="card-header">
+                <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="16"/>
+                  <line x1="8" y1="12" x2="16" y2="12"/>
+                </svg>
+                <h3>可用软件包</h3>
+                <button @click="loadPackages" class="icon-btn" title="刷新" style="margin-left:auto">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="card-body">
+                <div v-if="loadingPackages" class="empty-state">加载中...</div>
+                <div v-else-if="packageList.length === 0" class="empty-state">暂无可用软件包</div>
+                <div v-else>
+                  <div v-for="pkg in packageList" :key="pkg.id" class="package-item">
+                    <div class="package-info">
+                      <span class="package-name">{{ pkg.name }}</span>
+                      <span class="package-version">v{{ pkg.version }}</span>
+                      <span class="package-desc">{{ pkg.description }}</span>
+                    </div>
+                    <button
+                      v-if="isInstalled(pkg.id)"
+                      class="action-btn installed-btn"
+                      disabled
+                    >已安装</button>
+                    <button
+                      v-else
+                      @click="installPkg(pkg.id)"
+                      class="action-btn install"
+                      :disabled="installingPkg === pkg.id"
+                    >
+                      {{ installingPkg === pkg.id ? '安装中...' : '安装' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </template>
+        </div>
       </div>
 
       <!-- 使用说明 -->
@@ -507,7 +618,7 @@ import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 
 // ============ State ============
-type View = 'chat' | 'dashboard' | 'guide' | 'settings'
+type View = 'chat' | 'dashboard' | 'guide' | 'packages' | 'settings'
 const currentView = ref<View>('guide')
 // URLs (filled by invoke calls)
 const chatUrl = ref('http://127.0.0.1:8787')
@@ -539,6 +650,9 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'info',
   }, duration)
 }
 
+// App version
+const appVersion = ref('')
+
 // API Config
 const apiConfig = ref({
   api_key: '',
@@ -552,8 +666,68 @@ const apiConfig = ref({
 // Environment
 const envChecking = ref(false)
 const isSettingUp = ref(false)
-const appVersion = ref('')
-const envStatus = ref({
+const envStatus = ref<any>({})
+
+// Package management
+const packageList = ref<any[]>([])
+const installedPackages = ref<any[]>([])
+const loadingPackages = ref(false)
+const installingPkg = ref<string | null>(null)
+const uninstallingPkg = ref<string | null>(null)
+
+async function openPackagesView() {
+  currentView.value = 'packages'
+  await loadPackages()
+}
+
+async function loadPackages() {
+  loadingPackages.value = true
+  try {
+    const [available, installed] = await Promise.all([
+      invoke<any[]>('get_package_list'),
+      invoke<any[]>('get_installed_packages'),
+    ])
+    packageList.value = available
+    installedPackages.value = installed
+  } catch (e: any) {
+    showToast('加载软件包列表失败: ' + e, 'error')
+  } finally {
+    loadingPackages.value = false
+  }
+}
+
+function isInstalled(id: string) {
+  return installedPackages.value.some(p => p.id === id)
+}
+
+async function installPkg(id: string) {
+  installingPkg.value = id
+  try {
+    const result: any = await invoke('download_install_package', { packageId: id })
+    showToast(result.message || '安装成功', 'success')
+    await loadPackages()
+  } catch (e: any) {
+    showToast('安装失败: ' + e, 'error')
+  } finally {
+    installingPkg.value = null
+  }
+}
+
+async function uninstallPkg(id: string) {
+  if (!confirm('确定要卸载该软件包吗？')) return
+  uninstallingPkg.value = id
+  try {
+    const result: any = await invoke('uninstall_package', { packageId: id })
+    showToast(result.message || '卸载成功', 'success')
+    await loadPackages()
+  } catch (e: any) {
+    showToast('卸载失败: ' + e, 'error')
+  } finally {
+    uninstallingPkg.value = null
+  }
+}
+
+const envStatus = ref<any>({
   python_ok: false,
   agent_ok: false,
   node_ok: false,

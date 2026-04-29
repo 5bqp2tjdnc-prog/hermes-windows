@@ -2948,6 +2948,10 @@ fn main() {
             check_hermes_environment,
             setup_hermes_environment,
             setup_nodejs,
+            get_package_list,
+            get_installed_packages,
+            download_install_package,
+            uninstall_package,
         ])
         .on_window_event(|_window, _event| {
             // 第四版方案：服务进程完全独立运行，主程序关闭时不停止后台服务
