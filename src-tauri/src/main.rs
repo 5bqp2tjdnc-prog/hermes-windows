@@ -120,7 +120,7 @@ fn decode_output(bytes: &[u8]) -> String {
 
 /// 创建静默命令（Windows 下加 CREATE_NO_WINDOW）
 fn silent_cmd(program: &str) -> std::process::Command {
-    let cmd = std::process::Command::new(program);
+    let mut cmd = std::process::Command::new(program);
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
     cmd
@@ -299,7 +299,7 @@ impl AppConfig {
 /// 创建一个配置好的 Python 进程 Command。
 /// 如果找到的是 `py.exe`（Python Launcher），会自动添加 `-3` 参数。
 fn new_python_cmd(python: &Path) -> std::process::Command {
-    let cmd = std::process::Command::new(python);
+    let mut cmd = std::process::Command::new(python);
     #[cfg(target_os = "windows")]
     {
         if let Some(name) = python.file_name().and_then(|n| n.to_str()) {
@@ -545,7 +545,7 @@ fn fix_python_pth(python: &Path) {
 /// 检查捆绑 Python 是否完整可用（版本 >= 3.10 且有 pyyaml）（仅 Windows）
 #[cfg(target_os = "windows")]
 fn bundled_python_ok(data_dir: &Path) -> Option<PathBuf> {
-    let python_exe = get_bundled_python_dir(data_dir).join("python.exe");
+    let python_exe = data_dir.join("python").join("python.exe");
     if !python_exe.exists() {
         return None;
     }
@@ -581,7 +581,7 @@ fn bundled_python_ok(data_dir: &Path) -> Option<PathBuf> {
 /// 下载并解压 Python 3.10+ embeddable（同步阻塞，仅 Windows）
 #[cfg(target_os = "windows")]
 fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
-    let python_dir = get_bundled_python_dir(data_dir);
+    let python_dir = data_dir.join("python");
     if let Some(python_exe) = bundled_python_ok(data_dir) {
         return Ok(python_exe);
     }
