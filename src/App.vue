@@ -448,14 +448,6 @@
                   </span>
                   <span class="env-check-path">{{ envStatus.agent_path || '-' }}</span>
                 </div>
-                <div class="env-item">
-                  <span class="env-check-label">Node.js</span>
-                  <span class="env-check-status" :class="envStatus.node_ok ? 'ok' : 'fail'">
-                    <span class="check-dot"></span>
-                    {{ envStatus.node_ok ? '已安装' : '未安装' }}
-                  </span>
-                  <span class="env-check-path">{{ envStatus.node_version || '管理后台需要' }}</span>
-                </div>
                 <div class="env-item" v-if="envStatus.version">
                   <span class="env-check-label">版本</span>
                   <span class="env-check-status ok">{{ envStatus.version }}</span>
@@ -468,7 +460,7 @@
                 </button>
                 <button class="btn btn-primary" @click="setupEnvironment" :disabled="isSettingUp">
                   <span v-if="isSettingUp" class="btn-spinner"></span>
-                  {{ isSettingUp ? '安装中...' : '一键安装全部运行环境' }}
+                  {{ isSettingUp ? '安装中...' : '安装 Hermes 环境' }}
                 </button>
               </div>
               <div class="env-overall" :class="envStatus.ready ? 'ready' : 'not-ready'">

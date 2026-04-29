@@ -704,12 +704,18 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
         return Ok(bundled);
     }
 
-    // 2. 应用数据目录（setup_hermes_environment 下载的位置）
+    // 2. 应用数据目录（setup_hermes_environment 下载的位置，解压后根目录即入口）
     if let Ok(data_dir) = get_data_dir() {
-        let data_path = data_dir.join("hermes-agent").join("hermes");
+        let data_path = data_dir.join("hermes");
         if data_path.exists() {
             *get_agent_cache().lock().unwrap() = Some(data_path.clone());
             return Ok(data_path);
+        }
+        // 兼容旧路径
+        let old_path = data_dir.join("hermes-agent").join("hermes");
+        if old_path.exists() {
+            *get_agent_cache().lock().unwrap() = Some(old_path.clone());
+            return Ok(old_path);
         }
     }
 
@@ -1598,8 +1604,8 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
 
     std::fs::remove_file(&zip_path).ok();
 
-    // 验证入口文件
-    let hermes_check = data_dir.join("hermes-agent").join("hermes");
+    // 验证入口文件（hermes-agent.zip 解压后 hermes 在根目录）
+    let hermes_check = data_dir.join("hermes");
     if !hermes_check.exists() {
         return Err("解压完成但未找到 hermes 入口文件".to_string());
     }
@@ -1616,12 +1622,11 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     pip_upgrade.creation_flags(0x08000000);
     pip_upgrade.output().ok();
 
-    // 安装 Hermes Agent（静默）
-    let hermes_agent_dir = data_dir.join("hermes-agent");
+    // 安装 Hermes Agent（hermes-agent.zip 解压后根目录即是包内容）
     let mut install = new_python_cmd(&python);
     install.arg("-m").arg("pip").arg("install")
         .arg("--force-reinstall")
-        .arg(hermes_agent_dir.to_string_lossy().to_string());
+        .arg(data_dir.to_string_lossy().to_string());
     #[cfg(target_os = "windows")]
     install.creation_flags(0x08000000);
     let install_result = install.output()
@@ -1665,7 +1670,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     Ok(serde_json::json!({
         "success": true,
         "message": "环境安装成功",
-        "path": data_dir.join("hermes-agent").join("hermes").to_string_lossy().to_string(),
+        "path": data_dir.join("hermes").to_string_lossy().to_string(),
     }))
 }
 
