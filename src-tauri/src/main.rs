@@ -698,6 +698,15 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
         .unwrap_or_default();
 
     // 1. 和 exe 同目录的 hermes-agent/
+    // Windows 上优先用 hermes.bat（跨平台 zip 里的批处理入口）
+    #[cfg(target_os = "windows")]
+    {
+        let bundled_bat = exe_dir.join("hermes-agent").join("hermes.bat");
+        if bundled_bat.exists() {
+            *get_agent_cache().lock().unwrap() = Some(bundled_bat.clone());
+            return Ok(bundled_bat);
+        }
+    }
     let bundled = exe_dir.join("hermes-agent").join("hermes");
     if bundled.exists() {
         *get_agent_cache().lock().unwrap() = Some(bundled.clone());
@@ -706,16 +715,36 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
 
     // 2. 应用数据目录（setup_hermes_environment 下载的位置，解压后根目录即入口）
     if let Ok(data_dir) = get_data_dir() {
+        // Windows 上优先用 hermes.bat
+        #[cfg(target_os = "windows")]
+        {
+            let data_bat = data_dir.join("hermes.bat");
+            if data_bat.exists() {
+                *get_agent_cache().lock().unwrap() = Some(data_bat.clone());
+                return Ok(data_bat);
+            }
+        }
         let data_path = data_dir.join("hermes");
         if data_path.exists() {
             *get_agent_cache().lock().unwrap() = Some(data_path.clone());
             return Ok(data_path);
         }
         // 兼容旧路径
-        let old_path = data_dir.join("hermes-agent").join("hermes");
-        if old_path.exists() {
-            *get_agent_cache().lock().unwrap() = Some(old_path.clone());
-            return Ok(old_path);
+        #[cfg(target_os = "windows")]
+        {
+            let old_path = data_dir.join("hermes-agent").join("hermes.bat");
+            if old_path.exists() {
+                *get_agent_cache().lock().unwrap() = Some(old_path.clone());
+                return Ok(old_path);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let old_path = data_dir.join("hermes-agent").join("hermes");
+            if old_path.exists() {
+                *get_agent_cache().lock().unwrap() = Some(old_path.clone());
+                return Ok(old_path);
+            }
         }
     }
 
