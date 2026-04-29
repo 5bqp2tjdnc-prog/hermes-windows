@@ -71,31 +71,6 @@
       <nav class="sidebar-nav">
         <button
           class="nav-item"
-          :class="{ active: currentView === 'chat' }"
-          @click="openChatView"
-        >
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-          </svg>
-          AI 对话
-        </button>
-        <button
-          class="nav-item"
-          :class="{ active: currentView === 'dashboard' }"
-          @click="openDashboardView"
-          :disabled="!envReady"
-        >
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="16 3 21 3 21 8"/>
-            <line x1="4" y1="20" x2="21" y2="3"/>
-            <polyline points="21 16 21 21 16 21"/>
-            <line x1="15" y1="15" x2="21" y2="21"/>
-            <line x1="4" y1="4" x2="9" y2="9"/>
-          </svg>
-          管理后台
-        </button>
-        <button
-          class="nav-item"
           :class="{ active: currentView === 'packages' }"
           @click="openPackagesView"
           :disabled="!envReady"
@@ -162,18 +137,8 @@
           </button>
         </div>
       </transition>
-      <!-- AI 对话 (iframe 内嵌) -->
-      <div v-if="currentView === 'chat'" class="iframe-view">
-        <iframe :src="chatUrl" frameborder="0" class="app-iframe" allow="clipboard-read; clipboard-write"></iframe>
-      </div>
-
-      <!-- 管理后台 (iframe 内嵌) -->
-      <div v-else-if="currentView === 'dashboard'" class="iframe-view">
-        <iframe :src="dashboardUrl" frameborder="0" class="app-iframe"></iframe>
-      </div>
-
       <!-- 软件包管理 -->
-      <div v-else-if="currentView === 'packages'" class="settings-view">
+      <div v-if="currentView === 'packages'" class="settings-view">
         <div class="settings-header">
           <h2>
             <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -271,7 +236,7 @@
       </div>
 
       <!-- 使用说明 -->
-      <div v-else-if="currentView === 'guide'" class="settings-view">
+      <div v-if="currentView === 'guide'" class="settings-view">
         <div class="settings-header">
           <h2>
             <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -397,7 +362,7 @@
       </div>
 
       <!-- Settings View -->
-      <div v-else-if="currentView === 'settings'" class="settings-view">
+      <div v-if="currentView === 'settings'" class="settings-view">
         <div class="settings-header">
           <h2>
             <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -674,11 +639,8 @@ import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 
 // ============ State ============
-type View = 'chat' | 'dashboard' | 'guide' | 'packages' | 'settings'
+type View = 'guide' | 'packages' | 'settings'
 const currentView = ref<View>('guide')
-// URLs (filled by invoke calls)
-const chatUrl = ref('http://127.0.0.1:8787')
-const dashboardUrl = ref('http://127.0.0.1:9119')
 
 // License
 const machineCode = ref('')
@@ -857,25 +819,6 @@ async function copyMachineCode() {
     showToast('机器码已复制', 'success')
   } catch (e) {
     showToast('复制失败', 'error')
-  }
-}
-
-// ============ View Navigation ============
-async function openChatView() {
-  try {
-    // 弹窗模式：打开独立窗口加载 AI 对话
-    await invoke('open_chat_window_popup')
-  } catch (e: any) {
-    showToast('启动对话失败: ' + e, 'error')
-  }
-}
-
-async function openDashboardView() {
-  try {
-    await invoke('open_management_backend')
-    showToast('管理后台已在浏览器中打开', 'success')
-  } catch (e: any) {
-    showToast('启动管理后台失败: ' + e, 'error')
   }
 }
 
@@ -2464,20 +2407,6 @@ html, body {
   border-radius: 50%;
   background: currentColor;
   flex-shrink: 0;
-}
-
-/* ============ Iframe View ============ */
-.iframe-view {
-  width: 100%;
-  height: 100vh;
-  overflow: hidden;
-}
-
-.app-iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-  background: #fff;
 }
 
 /* ============ Guide Page ============ */
