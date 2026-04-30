@@ -23,6 +23,23 @@ fn get_agent_cache() -> &'static Mutex<Option<PathBuf>> {
     CACHED_AGENT.get_or_init(|| Mutex::new(None))
 }
 
+/// 写调试日志到文件（Hermes 安装问题诊断用）
+fn log_step(msg: &str) {
+    if let Ok(data_dir) = get_data_dir() {
+        let log_path = data_dir.join("setup_debug.log");
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let line = format!("[{}] {}\n", timestamp, msg);
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    }
+}
+
 // ============ Types ============
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1639,8 +1656,10 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     // 验证入口文件（hermes-agent.zip 解压后 hermes 在根目录）
     let hermes_check = data_dir.join("hermes");
     if !hermes_check.exists() {
+        log_step(&format!("ERROR: hermes not found at {}", hermes_check.display()));
         return Err("解压完成但未找到 hermes 入口文件".to_string());
     }
+    log_step(&format!("OK: hermes found at {}", hermes_check.display()));
 
     // Step 3: 安装 Python 依赖
     let python = find_hermes_python()?;
@@ -1671,6 +1690,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
 
     if !install_result.status.success() {
         let install_stderr = decode_output(&install_result.stderr);
+        log_step(&format!("pip install failed: {}", install_stderr));
         // 尝试直接安装核心依赖
         let mut fallback = new_python_cmd(&python);
         fallback.arg("-m").arg("pip").arg("install")
