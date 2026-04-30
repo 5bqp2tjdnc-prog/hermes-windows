@@ -701,6 +701,48 @@ fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
     Ok(python_exe)
 }
 
+// 如果 hermes-agent.zip 的旧版本把内容解压到了 hermes-agent/ 子目录，
+// 自动把文件迁移到 data_dir 根目录，避免相对路径定位出错
+fn migrate_stuck_subdir(data_dir: &Path) -> Result<(), String> {
+    let subdir = data_dir.join("hermes-agent");
+    if !subdir.is_dir() {
+        return Ok(()); // 没有子目录，无需迁移
+    }
+
+    // 检查 hermes 和 hermes-workspace 是否都在子目录里
+    let has_hermes = subdir.join("hermes").exists() || subdir.join("hermes.bat").exists();
+    let has_workspace = subdir.join("hermes-workspace").is_dir();
+
+    if !has_hermes && !has_workspace {
+        return Ok(()); // 不是旧结构残留，无需迁移
+    }
+
+    eprintln!("[Hermes] 检测到旧版 zip 残留子目录，正在自动迁移...");
+
+    // 迁移 hermes-agent 内的所有文件和目录到根目录
+    if let Ok(entries) = std::fs::read_dir(&subdir) {
+        for entry in entries.flatten() {
+            let src = entry.path();
+            let dst = data_dir.join(src.file_name().unwrap());
+            if src.is_dir() && src.file_name().unwrap() == "hermes-workspace" {
+                // hermes-workspace 整体迁移
+                if dst.exists() {
+                    std::fs::remove_dir_all(&dst).ok();
+                }
+            }
+            if let Err(e) = std::fs::rename(&src, &dst) {
+                eprintln!("[Hermes] 迁移文件失败 {}: {}", src.display(), e);
+            }
+        }
+    }
+
+    // 删除空子目录
+    std::fs::remove_dir(&subdir).ok();
+
+    eprintln!("[Hermes] 迁移完成");
+    Ok(())
+}
+
 fn find_hermes_agent() -> Result<PathBuf, String> {
     // 先检查缓存
     if let Some(cached) = get_agent_cache().lock().unwrap().as_ref() {
@@ -732,6 +774,9 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
 
     // 2. 应用数据目录（setup_hermes_environment 下载的位置，解压后根目录即入口）
     if let Ok(data_dir) = get_data_dir() {
+        // 先检查并迁移旧版残留的子目录结构
+        migrate_stuck_subdir(&data_dir).ok();
+
         // Windows 上优先用 hermes.bat
         #[cfg(target_os = "windows")]
         {
@@ -746,7 +791,7 @@ fn find_hermes_agent() -> Result<PathBuf, String> {
             *get_agent_cache().lock().unwrap() = Some(data_path.clone());
             return Ok(data_path);
         }
-        // 兼容旧路径
+        // 兼容旧路径（已由 migrate_stuck_subdir 迁移，这里兜底）
         #[cfg(target_os = "windows")]
         {
             let old_path = data_dir.join("hermes-agent").join("hermes.bat");
