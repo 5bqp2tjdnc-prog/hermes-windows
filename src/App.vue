@@ -557,7 +557,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, onUnmounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { check } from '@tauri-apps/plugin-updater'
