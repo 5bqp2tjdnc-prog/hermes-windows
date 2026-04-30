@@ -384,8 +384,8 @@ fn kill_process_on_port(port: u16) {
                         .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
                         .creation_flags(0x08000000)
                         .output();
-                    if pid_output.map(|o| String::from_utf8_lossy(&o.stdout)).is_ok() {
-                        let pid_out = String::from_utf8_lossy(&pid_output.unwrap().stdout);
+                    if let Ok(ref output) = pid_output {
+                        let pid_out = String::from_utf8_lossy(&output.stdout);
                         let proc_name = pid_out.to_lowercase();
                         if proc_name.contains("python") || proc_name.contains("node") {
                             let _ = Command::new("taskkill")
