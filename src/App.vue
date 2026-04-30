@@ -462,6 +462,12 @@
                   <span v-if="isSettingUp" class="btn-spinner"></span>
                   {{ isSettingUp ? '安装中...' : '安装 Hermes 环境' }}
                 </button>
+                <div v-if="isSettingUp && setupProgress.message" class="install-progress">
+                  <div class="progress-bar">
+                    <div class="progress-fill" :style="{width: (setupProgress.step / setupProgress.total * 100) + '%'}"></div>
+                  </div>
+                  <span class="progress-text">{{ setupProgress.message }}</span>
+                </div>
               </div>
               <div class="env-overall" :class="envStatus.ready ? 'ready' : 'not-ready'">
                 <span class="overall-dot"></span>
@@ -551,8 +557,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 
@@ -616,6 +623,7 @@ watch(() => apiConfig.value.model, (model) => {
 // Environment
 const envChecking = ref(false)
 const isSettingUp = ref(false)
+const setupProgress = ref({ step: 0, total: 6, message: '' })
 const envStatus = ref<any>({
   python_ok: false,
   agent_ok: false,
@@ -762,7 +770,12 @@ async function checkEnvironment() {
 
 async function setupEnvironment() {
   isSettingUp.value = true
+  setupProgress.value = { step: 0, total: 6, message: '开始安装...' }
+  let unlisten: (() => void) | null = null
   try {
+    unlisten = await listen<{step:number,total:number,message:string}>('hermes-progress', (event) => {
+      setupProgress.value = event.payload
+    })
     const result: any = await invoke('setup_hermes_environment')
     showToast(result.message, 'success')
     // 安装后重新检查环境
@@ -771,6 +784,8 @@ async function setupEnvironment() {
     showToast('安装失败: ' + e, 'error')
   } finally {
     isSettingUp.value = false
+    setupProgress.value = { step: 0, total: 6, message: '' }
+    if (unlisten) unlisten()
   }
 }
 
@@ -2449,5 +2464,31 @@ html, body {
 .launch-btn {
   font-size: 15px;
   padding: 12px 32px;
+}
+
+.install-progress {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.progress-bar {
+  height: 6px;
+  background: var(--bg-secondary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--gold));
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 </style>

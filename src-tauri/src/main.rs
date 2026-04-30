@@ -1556,8 +1556,9 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     };
 
     if !need_setup {
-        let hermes_check = data_dir.join("hermes-agent").join("hermes");
+        let hermes_check = data_dir.join("hermes");
         if hermes_check.exists() {
+            let _ = app_handle.emit("hermes-progress", serde_json::json!({"step": 5, "total": 5, "message": "运行环境已就绪"}));
             return Ok(serde_json::json!({
                 "success": true,
                 "message": "运行环境已就绪",
@@ -1574,6 +1575,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     }
 
     // Step 1: 获取 zip 文件
+    let _ = app_handle.emit("hermes-progress", serde_json::json!({"step": 1, "total": 6, "message": "正在获取安装包..."}));
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -1603,7 +1605,8 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
 
     std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
 
-    // Step 2: 解压到 data_dir（zip 顶层含 hermes-agent/ 和 hermes-workspace/）
+    // Step 2: 解压到 data_dir
+    let _ = app_handle.emit("hermes-progress", serde_json::json!({"step": 2, "total": 6, "message": "正在解压安装包..."}));
     #[cfg(target_os = "windows")]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -1642,6 +1645,8 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     // Step 3: 安装 Python 依赖
     let python = find_hermes_python()?;
 
+    let _ = app_handle.emit("hermes-progress", serde_json::json!({"step": 3, "total": 6, "message": "正在升级 pip..."}));
+
     // 升级 pip
     let mut pip_upgrade = new_python_cmd(&python);
     pip_upgrade.arg("-m").arg("pip").arg("install").arg("--upgrade").arg("pip")
@@ -1652,6 +1657,7 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     let _ = pip_upgrade.output();
 
     // 安装 Hermes Agent（hermes-agent.zip 解压后根目录即是包内容）
+    let _ = app_handle.emit("hermes-progress", serde_json::json!({"step": 4, "total": 6, "message": "正在安装 Python 依赖（首次较慢，请耐心等待）..."}));
     let mut install = new_python_cmd(&python);
     install.arg("-m").arg("pip").arg("install")
         .arg("--force-reinstall")
@@ -1696,10 +1702,13 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     let _ = ws_deps.output();
 
     // Step 4: 安装 Node.js（Web UI 需要）
+    let _ = app_handle.emit("hermes-progress", serde_json::json!({"step": 5, "total": 6, "message": "正在检查/安装 Node.js..."}));
     ensure_nodejs(&data_dir).await?;
 
     // 写入版本戳，标记当前环境对应版本
     let _ = std::fs::write(&version_stamp, &current_version);
+
+    let _ = app_handle.emit("hermes-progress", serde_json::json!({"step": 6, "total": 6, "message": "安装完成！"}));
 
     Ok(serde_json::json!({
         "success": true,
