@@ -86,16 +86,17 @@ jobs:
             echo "Hermes-workspace built"
           }
 
-          # Put hermes-workspace as SIBLING of hermes-agent inside the final bundle dir
-          # Final structure: hermes-final/hermes-agent/ + hermes-final/hermes-workspace/
-          New-Item -ItemType Directory -Force "$env:TEMP\hermes-final" | Out-Null
-          Move-Item $agentSrc "$env:TEMP\hermes-final\hermes-agent" -Force
-          Move-Item $wsDir "$env:TEMP\hermes-final\hermes-workspace" -Force
+          # Flatten structure: hermes-agent/ and hermes-workspace/ go directly into zip root
+          # This ensures unzipping produces data_dir/hermes-agent/ and data_dir/hermes-workspace/
+          # without an extra hermes-final/ wrapper directory
+          New-Item -ItemType Directory -Force "$env:TEMP\hermes-flat" | Out-Null
+          Move-Item $agentSrc "$env:TEMP\hermes-flat\hermes-agent" -Force
+          Move-Item $wsDir "$env:TEMP\hermes-flat\hermes-workspace" -Force
 
-          # Repackage hermes-agent.zip
+          # Repackage hermes-agent.zip with flat structure
           echo "Repackaging hermes-agent.zip..."
           if (Test-Path "src-tauri\hermes-agent.zip") { Remove-Item "src-tauri\hermes-agent.zip" -Force }
-          Compress-Archive -Path "$env:TEMP\hermes-final\*" -DestinationPath "src-tauri\hermes-agent.zip" -Force
+          Compress-Archive -Path "$env:TEMP\hermes-flat\*" -DestinationPath "src-tauri\hermes-agent.zip" -Force
           Write-Output "Package ready: $([math]::Round((Get-Item src-tauri\hermes-agent.zip).Length/1MB,1)) MB"
 
           # Overwrite resources zip so Tauri bundles the newly built zip
@@ -103,7 +104,7 @@ jobs:
           Write-Host "Updated resources/hermes-agent.zip"
 
           # Cleanup
-          Remove-Item "$env:TEMP\hermes-final" -Recurse -Force -EA SilentlyContinue
+          Remove-Item "$env:TEMP\hermes-flat" -Recurse -Force -EA SilentlyContinue
           echo "Done"
 
       # Rust cache
