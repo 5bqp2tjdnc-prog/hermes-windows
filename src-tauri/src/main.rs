@@ -1627,10 +1627,12 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     #[cfg(target_os = "windows")]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
+        log_step(&format!("extract: zip={} -> dir={}", zip_path.display(), data_dir.display()));
         let result = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", &format!(
-                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force; Get-ChildItem '{}' -Name",
                 zip_path.to_string_lossy(),
+                data_dir.to_string_lossy(),
                 data_dir.to_string_lossy()
             )])
             .creation_flags(CREATE_NO_WINDOW)
@@ -1639,6 +1641,8 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
         if !result.status.success() {
             return Err(format!("解压失败: {}", decode_output(&result.stderr)));
         }
+        let stdout = decode_output(&result.stdout);
+        log_step(&format!("extract result (first 500 chars): {}", &stdout[..stdout.len().min(500)]));
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1654,12 +1658,32 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     std::fs::remove_file(&zip_path).ok();
 
     // 验证入口文件（hermes-agent.zip 解压后 hermes 在根目录）
+    // 兼容：解压到 data_dir/ 或 data_dir/hermes-agent/ 两种情况
     let hermes_check = data_dir.join("hermes");
-    if !hermes_check.exists() {
-        log_step(&format!("ERROR: hermes not found at {}", hermes_check.display()));
+    let actual_hermes = if hermes_check.exists() {
+        hermes_check.clone()
+    } else if data_dir.join("hermes-agent").join("hermes").exists() {
+        // 兼容：zip 创建了 hermes-agent 子目录，把内容移出来
+        let subdir = data_dir.join("hermes-agent");
+        let mut entries = std::fs::read_dir(&subdir).map_err(|e| format!("读取解压目录失败: {}", e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("遍历解压目录失败: {}", e))?;
+            let src = entry.path();
+            let dst = data_dir.join(src.file_name().unwrap());
+            let _ = std::fs::rename(&src, &dst);
+        }
+        let _ = std::fs::remove_dir(&subdir);
+        data_dir.join("hermes")
+    } else {
+        log_step(&format!("ERROR: hermes not found in {}, subdir also missing", data_dir.display()));
+        return Err("解压完成但未找到 hermes 入口文件".to_string());
+    };
+    if actual_hermes.exists() {
+        log_step(&format!("OK: hermes found at {}", actual_hermes.display()));
+    } else {
+        log_step(&format!("ERROR: hermes still not found after move attempt"));
         return Err("解压完成但未找到 hermes 入口文件".to_string());
     }
-    log_step(&format!("OK: hermes found at {}", hermes_check.display()));
 
     // Step 3: 安装 Python 依赖
     let python = find_hermes_python()?;
