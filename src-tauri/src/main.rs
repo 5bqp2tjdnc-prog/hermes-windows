@@ -1642,53 +1642,58 @@ async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_
     // Step 3: 安装 Python 依赖
     let python = find_hermes_python()?;
 
-    // 升级 pip（静默）
+    // 升级 pip
     let mut pip_upgrade = new_python_cmd(&python);
     pip_upgrade.arg("-m").arg("pip").arg("install").arg("--upgrade").arg("pip")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     pip_upgrade.creation_flags(0x08000000);
-    pip_upgrade.output().ok();
+    let _ = pip_upgrade.output();
 
     // 安装 Hermes Agent（hermes-agent.zip 解压后根目录即是包内容）
     let mut install = new_python_cmd(&python);
     install.arg("-m").arg("pip").arg("install")
         .arg("--force-reinstall")
-        .arg(data_dir.to_string_lossy().to_string());
+        .arg(data_dir.to_string_lossy().to_string())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     install.creation_flags(0x08000000);
     let install_result = install.output()
         .map_err(|e| format!("运行 pip install 失败: {}", e))?;
 
     if !install_result.status.success() {
-        // 尝试直接安装核心依赖（静默）
+        let install_stderr = decode_output(&install_result.stderr);
+        // 尝试直接安装核心依赖
         let mut fallback = new_python_cmd(&python);
         fallback.arg("-m").arg("pip").arg("install")
             .arg("openai").arg("anthropic").arg("httpx[socks]")
             .arg("rich").arg("fire").arg("tenacity")
             .arg("pyyaml").arg("requests").arg("jinja2")
             .arg("pydantic").arg("prompt_toolkit").arg("python-dotenv")
-            .arg("fastapi").arg("uvicorn");
+            .arg("fastapi").arg("uvicorn")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         #[cfg(target_os = "windows")]
         fallback.creation_flags(0x08000000);
         let fb_result = fallback.output()
             .map_err(|e| format!("安装核心依赖失败: {}", e))?;
         if !fb_result.status.success() {
             let fb_stderr = decode_output(&fb_result.stderr);
-            return Err(format!("安装 Python 依赖失败: {}", fb_stderr));
+            return Err(format!("pip install 失败:\n{}\n\n核心依赖安装也失败:\n{}", install_stderr, fb_stderr));
         }
     }
 
-    // 安装 hermes-workspace 依赖（server.py 需要 pyyaml 等）
+    // 安装 hermes-workspace 依赖
     let mut ws_deps = new_python_cmd(&python);
     ws_deps.arg("-m").arg("pip").arg("install")
         .arg("pyyaml").arg("fastapi").arg("uvicorn")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     ws_deps.creation_flags(0x08000000);
-    ws_deps.output().ok();
+    let _ = ws_deps.output();
 
     // Step 4: 安装 Node.js（Web UI 需要）
     ensure_nodejs(&data_dir).await?;
