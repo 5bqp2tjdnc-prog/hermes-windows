@@ -209,6 +209,34 @@ fn load_cached_python_path() -> Option<PathBuf> {
 
 /// 找到 Python 路径后统一处理：持久化 + 内存缓存 + 返回
 fn report_python(path: PathBuf) -> Result<PathBuf, String> {
+    // 检查 Python 版本（需要 3.10+）
+    let output = std::process::Command::new(&path)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    if let Ok(output) = output {
+        let version_output = String::from_utf8_lossy(&output.stdout);
+        // 解析 "Python 3.X.Y" 或 "Python 3.X"
+        if let Some(v) = version_output.trim().strip_prefix("Python ") {
+            let major_minor = v.trim().split('.').take(2).collect::<Vec<_>>();
+            if major_minor.len() == 2 {
+                if let (Ok(major), Ok(minor)) = (
+                    major_minor[0].parse::<u32>(),
+                    major_minor[1].parse::<u32>(),
+                ) {
+                    if major < 3 || (major == 3 && minor < 10) {
+                        return Err(format!(
+                            "Python 版本过低 ({}.{}), 需要 Python 3.10 或更高版本",
+                            major, minor
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     save_python_path(&path);
     *get_python_cache().lock().unwrap() = Some(path.clone());
     Ok(path)
@@ -326,6 +354,60 @@ fn new_python_cmd(python: &Path) -> std::process::Command {
         }
     }
     cmd
+}
+
+/// 强制结束占用指定端口的进程（Windows netstat + taskkill）
+/// 用于解决重启后端口残留导致服务无法启动的问题
+#[cfg(target_os = "windows")]
+fn kill_process_on_port(port: u16) {
+    use std::process::Command;
+    // 查找占用端口的进程 PID
+    let output = Command::new("netstat")
+        .args(["-ano", "-p", "TCP"])
+        .creation_flags(0x08000000)
+        .output();
+
+    let Some(output) = output.ok() else { return };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    for line in stdout.lines() {
+        if line.contains(&format!(":{}", port)) {
+            // 找到 LOCAL ADDRESS 那一行，获取最后一列 PID
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(pid_str) = parts.last() {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    if pid == 0 {
+                        continue;
+                    }
+                    // 只杀 python.exe 和 node.exe，避免误杀系统进程
+                    let pid_output = Command::new("tasklist")
+                        .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
+                        .creation_flags(0x08000000)
+                        .output();
+                    if let Some(Ok(pid_out)) = pid_output.map(|o| String::from_utf8_lossy(&o.stdout).parse::<String>()) {
+                        let proc_name = pid_out.to_lowercase();
+                        if proc_name.contains("python") || proc_name.contains("node") {
+                            let _ = Command::new("taskkill")
+                                .args(["/PID", &pid.to_string(), "/F"])
+                                .creation_flags(0x08000000)
+                                .output();
+                            eprintln!("[Hermes] 已结束占用端口 {} 的进程 PID {}", port, pid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_process_on_port(_port: u16) {}
+
+/// 清理 Hermes 相关服务的残留进程和端口
+fn cleanup_stale_ports() {
+    kill_process_on_port(8787); // WebUI
+    kill_process_on_port(9120); // Chat server
+    kill_process_on_port(9119); // Dashboard
 }
 
 fn find_hermes_python() -> Result<PathBuf, String> {
@@ -2769,6 +2851,9 @@ fn get_version() -> String {
 // ============ Main ============
 
 fn main() {
+    // 启动前清理残留端口和进程，避免重启后端口被占用导致服务无法启动
+    cleanup_stale_ports();
+
     tauri::Builder::default()
         .manage(AppState {
             hermes_ready: Mutex::new(false),
