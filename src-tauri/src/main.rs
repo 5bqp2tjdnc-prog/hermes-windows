@@ -2574,7 +2574,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     let webui_dir = agent_dir.join("hermes-workspace");
 
     // 如果 hermes-workspace 不存在，说明未解压，从 resources 解压
-    if webui_dir.as_ref().map(|p| !p.exists()).unwrap_or(true) {
+    if !webui_dir.exists() {
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
