@@ -1586,6 +1586,48 @@ async fn test_feishu() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn debug_paths() -> Result<serde_json::Value, String> {
+    let data_dir = get_data_dir()?;
+    let exe_path = std::env::current_exe().unwrap_or_default();
+    let exe_dir = exe_path.parent().unwrap_or_default();
+    let agent_result = find_hermes_agent();
+    let agent_exe = agent_result.as_ref().ok();
+    let agent_dir = agent_exe.and_then(|p| p.parent()).unwrap_or_default();
+    let webui_dir = agent_dir.join("hermes-workspace");
+    let server_py = webui_dir.join("server.py");
+
+    // 检查 zip 是否在资源目录
+    let resource_dir = dirs::resource_dir().unwrap_or_default();
+    let zip_in_resource = resource_dir.join("hermes-agent.zip");
+    let zip_in_exe = exe_dir.join("hermes-agent.zip");
+    let zip_in_data = data_dir.join("hermes-agent.zip");
+
+    // 检查 hermes-workspace 实际内容
+    let ws_in_data = data_dir.join("hermes-workspace");
+    let ws_in_agent_subdir = data_dir.join("hermes-agent").join("hermes-workspace");
+
+    Ok(serde_json::json!({
+        "data_dir": data_dir.to_string_lossy(),
+        "exe_dir": exe_dir.to_string_lossy(),
+        "resource_dir": resource_dir.to_string_lossy(),
+        "agent_found": agent_result.is_ok(),
+        "agent_path": agent_exe.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+        "agent_dir": agent_dir.to_string_lossy(),
+        "webui_dir": webui_dir.to_string_lossy(),
+        "server_py_exists": server_py.exists(),
+        "server_py_path": server_py.to_string_lossy(),
+        "zip_in_resource": zip_in_resource.exists(),
+        "zip_in_exe": zip_in_exe.exists(),
+        "zip_in_data": zip_in_data.exists(),
+        "ws_in_data": ws_in_data.exists(),
+        "ws_in_data_contents": ws_in_data.exists().then(|| {
+            std::fs::read_dir(&ws_in_data).ok().map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>())
+        }).unwrap_or_default(),
+        "ws_in_agent_subdir": ws_in_agent_subdir.exists(),
+    }))
+}
+
+#[tauri::command]
 async fn check_hermes_environment() -> Result<serde_json::Value, String> {
     let python = find_hermes_python();
     let agent = find_hermes_agent();
@@ -2884,6 +2926,7 @@ fn main() {
             check_hermes_environment,
             setup_hermes_environment,
             setup_nodejs,
+            debug_paths,
         ])
         .on_window_event(|_window, _event| {
             // 第四版方案：服务进程完全独立运行，主程序关闭时不停止后台服务
