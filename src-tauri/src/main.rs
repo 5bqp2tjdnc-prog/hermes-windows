@@ -2692,7 +2692,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
             #[cfg(not(target_os = "windows"))]
             {
                 let _ = std::process::Command::new("unzip")
-                    .args(["-o", &zip_path.to_string_lossy(), "hermes-workspace/*", "-d", &data_dir.to_string_lossy()])
+                    .args(["-o", &zip_path.to_string_lossy(), "hermes-agent/*", "-d", &data_dir.to_string_lossy()])
                     .output();
             }
         }
