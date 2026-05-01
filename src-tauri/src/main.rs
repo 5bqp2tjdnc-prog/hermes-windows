@@ -2571,7 +2571,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     // 确保 hermes-agent.zip 已解压（包含 hermes-agent/ 和 hermes-workspace/ 同级目录）
     let agent_exe = find_hermes_agent()?;
     let agent_dir = agent_exe.parent().ok_or("无法获取 Hermes Agent 目录")?;
-    let webui_dir = agent_dir.parent().map(|p| p.join("hermes-workspace"));
+    let webui_dir = agent_dir.join("hermes-workspace");
 
     // 如果 hermes-workspace 不存在，说明未解压，从 resources 解压
     if webui_dir.as_ref().map(|p| !p.exists()).unwrap_or(true) {
