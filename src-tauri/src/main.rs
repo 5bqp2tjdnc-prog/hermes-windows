@@ -101,11 +101,11 @@ struct NanjingActivate {
 
 const ACTIVATION_SALT: &[u8] = b"HermesAI_v1_2025";
 const LICENSE_FILE: &str = "license.dat";
-const DEFAULT_API_BASE: &str = "https://api.minimaxi.com/anthropic";
+const DEFAULT_API_BASE: &str = "https://mcp.mxai.cn/mcp/api/";
 const LICENSE_SERVER: &str = "http://175.27.242.158:5000";
 
 // 内置 MiniMax API Key（发布前确认额度充足）
-const BUILTIN_API_KEY: &str = "sk-cp-_2yFksEQQQrzpyKNpNsPD7fiPiKbsOXJDLTfOwQdWDLZQro_iuG_UUFbrQOn9-g_WJPQtpf-MCx02bv89LYyhy6pI40TjrelWji--aLVNTN6fePCY64Udi0"; // MiniMax-M2.7-highspeed
+const BUILTIN_API_KEY: &str = "nb_d039fff39d7667857f593c2c5690b26d5df2bbc2b75bb26ce5bb8d6a02c753e2";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiMessage {
