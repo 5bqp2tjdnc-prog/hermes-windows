@@ -14,6 +14,7 @@ use std::os::windows::process::CommandExt;
 // 缓存 Python 路径，避免每次对话都重新检测
 static CACHED_PYTHON: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static CACHED_AGENT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static CACHED_RESOURCE_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
 fn get_python_cache() -> &'static Mutex<Option<PathBuf>> {
     CACHED_PYTHON.get_or_init(|| Mutex::new(None))
@@ -21,6 +22,10 @@ fn get_python_cache() -> &'static Mutex<Option<PathBuf>> {
 
 fn get_agent_cache() -> &'static Mutex<Option<PathBuf>> {
     CACHED_AGENT.get_or_init(|| Mutex::new(None))
+}
+
+fn get_resource_dir_cache() -> &'static Mutex<Option<PathBuf>> {
+    CACHED_RESOURCE_DIR.get_or_init(|| Mutex::new(None))
 }
 
 /// 写调试日志到文件（Hermes 安装问题诊断用）
@@ -696,27 +701,37 @@ fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
-        let resource_dir = std::env::var("HERMES_RESOURCE_DIR")
-            .map(PathBuf::from)
-            .ok();
 
-        let resource_paths = [
-            exe_dir.join("resources").join(&embeddable_zip),
-            exe_dir.join(&embeddable_zip),
+        // 依次搜索：HERMES_RESOURCE_DIR 环境变量 > 线程缓存 resource_dir > exe 同级目录
+        let cached_resource_dir = get_resource_dir_cache().lock().unwrap().clone();
+
+        let all_paths = [
+            std::env::var("HERMES_RESOURCE_DIR").ok(),
+            cached_resource_dir.map(|p| p.to_string_lossy().to_string()),
+            Some(exe_dir.join("resources").to_string_lossy().to_string()),
+            Some(exe_dir.to_string_lossy().to_string()),
         ];
 
-        if let Some(positive) = resource_paths.iter().find(|p| p.exists()) {
-            std::fs::read(positive).map_err(|e| format!("读取 Python 资源失败: {}", e))?
-        } else if let Some(ref rdir) = resource_dir {
-            let res_path = rdir.join(&embeddable_zip);
-            if res_path.exists() {
-                std::fs::read(&res_path).map_err(|e| format!("读取 Python 资源失败: {}", e))?
-            } else {
-                return Err(format!("未找到 Python 打包文件: {}", embeddable_zip));
+        let embeddable_zip = format!("python-{}-embed-amd64.zip", python_version);
+        let mut found = false;
+        let mut data = Vec::new();
+
+        for path_opt in &all_paths {
+            if let Some(ref path_str) = path_opt {
+                let zip_path = PathBuf::from(path_str).join(&embeddable_zip);
+                if zip_path.exists() {
+                    log_step(&format!("Found python zip at: {}", zip_path.display()));
+                    data = std::fs::read(&zip_path).map_err(|e| format!("读取 Python 资源失败: {}", e))?;
+                    found = true;
+                    break;
+                }
             }
-        } else {
-            return Err(format!("未找到 Python 打包文件: {}", embeddable_zip));
         }
+
+        if !found {
+            return Err(format!("未找到 Python 打包文件: {}\n请确认安装包完整，或手动安装 Python 3.10+ 后重试。", embeddable_zip));
+        }
+        data
     };
 
     let zip_path = data_dir.join(&embeddable_zip);
@@ -729,7 +744,7 @@ fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
             "-NoProfile",
             "-Command",
             &format!(
-                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                "Expand-Archive -Path \"{{}}\" -DestinationPath \"{{}}\" -Force",
                 zip_path.to_string_lossy(),
                 python_dir.to_string_lossy()
             ),
@@ -756,11 +771,13 @@ fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
+        let cached_resource_dir = get_resource_dir_cache().lock().unwrap().clone();
         let gp_paths = [
-            exe_dir.join("resources").join("get-pip.py"),
-            exe_dir.join("get-pip.py"),
+            cached_resource_dir.as_ref().map(|p| p.join("get-pip.py")),
+            Some(exe_dir.join("resources").join("get-pip.py")),
+            Some(exe_dir.join("get-pip.py")),
         ];
-        gp_paths.iter().find(|p| p.exists()).cloned()
+        gp_paths.iter().find_map(|p| p.as_ref()).filter(|p| p.exists()).cloned()
     };
 
     if let Some(ref gp) = getpip_path {
@@ -1623,7 +1640,12 @@ async fn debug_paths() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn check_hermes_environment() -> Result<serde_json::Value, String> {
+async fn check_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    // 设置 resource_dir 缓存，供 download_bundled_python 使用
+    if let Ok(rd) = app_handle.path().resource_dir() {
+        *get_resource_dir_cache().lock().unwrap() = Some(rd.clone());
+    }
+
     let python = find_hermes_python();
     let agent = find_hermes_agent();
 
@@ -1725,6 +1747,12 @@ fn check_node_installed() -> Option<String> {
 #[tauri::command]
 async fn setup_hermes_environment(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let data_dir = get_data_dir()?;
+
+    // 设置 resource_dir 缓存，供后续 download_bundled_python 使用
+    if let Ok(rd) = app_handle.path().resource_dir() {
+        *get_resource_dir_cache().lock().unwrap() = Some(rd.clone());
+    }
+
     let zip_path = data_dir.join("hermes-agent.zip");
     let current_version = app_handle.package_info().version.to_string();
     let version_stamp = data_dir.join(".hermes-version");
