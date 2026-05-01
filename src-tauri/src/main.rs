@@ -1596,9 +1596,7 @@ async fn debug_paths() -> Result<serde_json::Value, String> {
     let webui_dir = agent_dir.join("hermes-workspace");
     let server_py = webui_dir.join("server.py");
 
-    // 检查 zip 是否在资源目录
-    let resource_dir = dirs::resource_dir().unwrap_or_default();
-    let zip_in_resource = resource_dir.join("hermes-agent.zip");
+    // 检查 zip 是否在资源目录（resource_dir 在 Windows 上不可用，跳过）
     let zip_in_exe = exe_dir.join("hermes-agent.zip");
     let zip_in_data = data_dir.join("hermes-agent.zip");
 
@@ -1609,7 +1607,6 @@ async fn debug_paths() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "data_dir": data_dir.to_string_lossy(),
         "exe_dir": exe_dir.to_string_lossy(),
-        "resource_dir": resource_dir.to_string_lossy(),
         "agent_found": agent_result.is_ok(),
         "agent_path": agent_exe.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
         "agent_dir": agent_dir.to_string_lossy(),
