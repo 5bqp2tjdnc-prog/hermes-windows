@@ -1589,10 +1589,10 @@ async fn test_feishu() -> Result<String, String> {
 async fn debug_paths() -> Result<serde_json::Value, String> {
     let data_dir = get_data_dir()?;
     let exe_path = std::env::current_exe().unwrap_or_default();
-    let exe_dir = exe_path.parent().unwrap_or_default();
+    let exe_dir = exe_path.parent().map(PathBuf::from).unwrap_or_default();
     let agent_result = find_hermes_agent();
     let agent_exe = agent_result.as_ref().ok();
-    let agent_dir = agent_exe.and_then(|p| p.parent()).unwrap_or_default();
+    let agent_dir = agent_exe.and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let webui_dir = agent_dir.join("hermes-workspace");
     let server_py = webui_dir.join("server.py");
 
