@@ -33,19 +33,15 @@ jobs:
         run: npm ci
 
       # Copy pre-built hermes-agent.zip (committed to repo, no network needed)
-      # This zip was built on Mac with correct hermes-agent/ + hermes-workspace/ structure
       - name: Copy Pre-built Hermes Agent Package
         shell: pwsh
         run: |
-          if (Test-Path "src-tauri\hermes-agent.zip") {
-            $size = [math]::Round((Get-Item "src-tauri\hermes-agent.zip").Length / 1MB, 1)
-            Write-Output "Using pre-built hermes-agent.zip: $size MB"
-            Copy-Item "src-tauri\hermes-agent.zip" "src-tauri\resources\hermes-agent.zip" -Force
-            Write-Host "Copied to resources/hermes-agent.zip"
-          } else {
-            Write-Output "ERROR: src-tauri\hermes-agent.zip not found in repo"
-            exit 1
-          }
+          $zipSrc = "src-tauri\hermes-agent.zip"
+          if (-not (Test-Path $zipSrc)) { Write-Output "ERROR: $zipSrc not found"; exit 1 }
+          $size = [math]::Round((Get-Item $zipSrc).Length / 1MB, 1)
+          Write-Output "Using pre-built hermes-agent.zip: $size MB"
+          Copy-Item $zipSrc "src-tauri\resources\hermes-agent.zip" -Force
+          Write-Host "Copied to resources/hermes-agent.zip"
 
       # Rust cache
       - name: Rust cache
