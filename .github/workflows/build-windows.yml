@@ -36,14 +36,38 @@ jobs:
       - name: Clone Hermes Agent runtime
         shell: pwsh
         run: |
-          # Clone original NousResearch/hermes-agent
-          echo "Cloning original hermes-agent from GitHub..."
           $agentSrc = "$env:TEMP\hermes-agent"
           if (Test-Path $agentSrc) { Remove-Item $agentSrc -Recurse -Force }
-          git clone --depth 1 https://github.com/NousResearch/hermes-agent.git $agentSrc 2>&1 | Out-Null
+          New-Item -ItemType Directory -Force $agentSrc | Out-Null
+
+          # 通过 gh CLI 下载源码（gh 已内置 GitHub token，无网络问题）
+          echo "Downloading hermes-agent via GitHub API..."
+          $zipPath = "$env:TEMP\hermes-agent.zip"
+          gh api repos/NousResearch/hermes-agent/zipball -H "Accept: application/vnd.github+json" -o $zipPath 2>&1 | Out-Null
+
+          if (-not (Test-Path $zipPath)) {
+            Write-Output "ERROR: Failed to download hermes-agent"
+            exit 1
+          }
+
+          # 解压并整理结构：根目录是 hermes-agent-xxx，需要将内容提取出来
+          echo "Extracting and restructuring..."
+          $tempExtract = "$env:TEMP\hermes-agent-extract"
+          New-Item -ItemType Directory -Force $tempExtract | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $tempExtract -Force
+          Remove-Item $zipPath -Force -EA SilentlyContinue
+
+          # 找到实际的 hermes-agent-xxx 目录并将其内容移到 $agentSrc
+          $extractedDir = Get-ChildItem -Path $tempExtract -Directory | Select-Object -First 1
+          if ($extractedDir) {
+            Get-ChildItem -Path $extractedDir.FullName | Move-Item -Destination $agentSrc -Force
+            Remove-Item $extractedDir.FullName -Recurse -Force -EA SilentlyContinue
+          }
+          Remove-Item $tempExtract -Recurse -Force -EA SilentlyContinue
 
           if (-not (Test-Path "$agentSrc\agent\__init__.py")) {
-            Write-Output "ERROR: agent package not found in cloned hermes-agent"
+            Write-Output "ERROR: agent package not found in hermes-agent"
+            Get-ChildItem $agentSrc -Recurse -Depth 2 | Select-Object FullName | Out-Null
             exit 1
           }
 
@@ -62,13 +86,34 @@ jobs:
           echo "Dashboard built"
 
           # Clone hermes-workspace (AI chat interface)
-          echo "Cloning hermes-workspace..."
+          echo "Downloading hermes-workspace..."
           $wsDir = "$env:TEMP\hermes-workspace"
           if (Test-Path $wsDir) { Remove-Item $wsDir -Recurse -Force }
-          git clone --depth 1 https://github.com/nesquena/hermes-webui.git $wsDir 2>&1 | Out-Null
+          New-Item -ItemType Directory -Force $wsDir | Out-Null
+
+          $wsZipPath = "$env:TEMP\hermes-webui.zip"
+          gh api repos/nesquena/hermes-webui/zipball -H "Accept: application/vnd.github+json" -o $wsZipPath 2>&1 | Out-Null
+
+          if (-not (Test-Path $wsZipPath)) {
+            Write-Output "ERROR: Failed to download hermes-webui"
+            exit 1
+          }
+
+          $wsTempExtract = "$env:TEMP\hermes-webui-extract"
+          New-Item -ItemType Directory -Force $wsTempExtract | Out-Null
+          Expand-Archive -Path $wsZipPath -DestinationPath $wsTempExtract -Force
+          Remove-Item $wsZipPath -Force -EA SilentlyContinue
+
+          $wsExtractedDir = Get-ChildItem -Path $wsTempExtract -Directory | Select-Object -First 1
+          if ($wsExtractedDir) {
+            Get-ChildItem -Path $wsExtractedDir.FullName | Move-Item -Destination $wsDir -Force
+            Remove-Item $wsExtractedDir.FullName -Recurse -Force -EA SilentlyContinue
+          }
+          Remove-Item $wsTempExtract -Recurse -Force -EA SilentlyContinue
 
           if (-not (Test-Path "$wsDir\bootstrap.py")) {
             Write-Output "ERROR: bootstrap.py not found in hermes-workspace"
+            Get-ChildItem $wsDir -Recurse -Depth 2 | Select-Object FullName | Out-Null
             exit 1
           }
 
@@ -87,8 +132,6 @@ jobs:
           }
 
           # Flatten structure: hermes-agent/ and hermes-workspace/ go directly into zip root
-          # This ensures unzipping produces data_dir/hermes-agent/ and data_dir/hermes-workspace/
-          # without an extra hermes-final/ wrapper directory
           New-Item -ItemType Directory -Force "$env:TEMP\hermes-flat" | Out-Null
           Move-Item $agentSrc "$env:TEMP\hermes-flat\hermes-agent" -Force
           Move-Item $wsDir "$env:TEMP\hermes-flat\hermes-workspace" -Force
