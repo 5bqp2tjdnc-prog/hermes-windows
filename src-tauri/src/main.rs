@@ -744,7 +744,7 @@ fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
             "-NoProfile",
             "-Command",
             &format!(
-                "Expand-Archive -Path \"{{}}\" -DestinationPath \"{{}}\" -Force",
+                "Expand-Archive -Path \"{}\" -DestinationPath \"{}\" -Force",
                 zip_path.to_string_lossy(),
                 python_dir.to_string_lossy()
             ),
