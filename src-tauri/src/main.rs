@@ -1613,7 +1613,6 @@ async fn debug_paths() -> Result<serde_json::Value, String> {
         "webui_dir": webui_dir.to_string_lossy(),
         "server_py_exists": server_py.exists(),
         "server_py_path": server_py.to_string_lossy(),
-        "zip_in_resource": zip_in_resource.exists(),
         "zip_in_exe": zip_in_exe.exists(),
         "zip_in_data": zip_in_data.exists(),
         "ws_in_data": ws_in_data.exists(),
