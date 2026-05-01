@@ -2613,9 +2613,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
     // 重新定位 hermes-agent 和 hermes-workspace
     let agent_exe = find_hermes_agent()?;
     let agent_dir = agent_exe.parent().ok_or("无法获取 Hermes Agent 目录")?;
-    let webui_dir = agent_dir.parent()
-        .map(|p| p.join("hermes-workspace"))
-        .ok_or("无法定位 hermes-workspace 目录")?;
+    let webui_dir = agent_dir.join("hermes-workspace");
 
     let server_py = webui_dir.join("server.py");
     if !server_py.exists() {
@@ -2658,9 +2656,7 @@ async fn ensure_webui_server(app_handle: &tauri::AppHandle) -> Result<u16, Strin
         }
         let agent_exe = find_hermes_agent()?;
         let agent_dir = agent_exe.parent().ok_or("无法获取 Hermes Agent 目录")?;
-        let webui_dir = agent_dir.parent()
-            .map(|p| p.join("hermes-workspace"))
-            .ok_or("无法定位 hermes-workspace 目录")?;
+        let webui_dir = agent_dir.join("hermes-workspace");
         let server_py = webui_dir.join("server.py");
         if !server_py.exists() {
             return Err("重新解压后仍未找到 hermes-workspace/server.py".to_string());
