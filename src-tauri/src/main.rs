@@ -678,7 +678,8 @@ fn bundled_python_ok(data_dir: &Path) -> Option<PathBuf> {
     Some(python_exe)
 }
 
-/// 下载并解压 Python 3.10+ embeddable（同步阻塞，仅 Windows）
+/// 解压并初始化 Python 3.10+ embeddable（同步阻塞，仅 Windows）
+/// 优先从打包的资源文件读取，完全离线可用
 #[cfg(target_os = "windows")]
 fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
     let python_dir = data_dir.join("python");
@@ -688,57 +689,58 @@ fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
 
     let python_version = "3.10.11";
     let embeddable_zip = format!("python-{}-embed-amd64.zip", python_version);
-    let download_url = format!(
-        "http://175.27.242.158:5000/download/{}",
-        embeddable_zip
-    );
+
+    // 优先从打包的资源文件读取（exe 同目录或 resource_dir）
+    let bytes = {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let resource_dir = std::env::var("HERMES_RESOURCE_DIR")
+            .map(PathBuf::from)
+            .ok();
+
+        let resource_paths = [
+            exe_dir.join("resources").join(&embeddable_zip),
+            exe_dir.join(&embeddable_zip),
+        ];
+
+        if let Some(positive) = resource_paths.iter().find(|p| p.exists()) {
+            std::fs::read(positive).map_err(|e| format!("读取 Python 资源失败: {}", e))?
+        } else if let Some(ref rdir) = resource_dir {
+            let res_path = rdir.join(&embeddable_zip);
+            if res_path.exists() {
+                std::fs::read(&res_path).map_err(|e| format!("读取 Python 资源失败: {}", e))?
+            } else {
+                return Err(format!("未找到 Python 打包文件: {}", embeddable_zip));
+            }
+        } else {
+            return Err(format!("未找到 Python 打包文件: {}", embeddable_zip));
+        }
+    };
 
     let zip_path = data_dir.join(&embeddable_zip);
-
-    // 下载
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-
-    let response = client
-        .get(&download_url)
-        .send()
-        .map_err(|e| format!("下载 Python 失败: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("下载 Python 失败: HTTP {}", response.status()));
-    }
-
-    let bytes = response
-        .bytes()
-        .map_err(|e| format!("读取 Python 数据失败: {}", e))?
-        .to_vec();
-
     std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入 Python 文件失败: {}", e))?;
 
     // 解压
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let unzip_result = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                    zip_path.to_string_lossy(),
-                    python_dir.to_string_lossy()
-                ),
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("解压 Python 失败: {}", e))?;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let unzip_result = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                zip_path.to_string_lossy(),
+                python_dir.to_string_lossy()
+            ),
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("解压 Python 失败: {}", e))?;
 
-        if !unzip_result.status.success() {
-            let stderr = String::from_utf8_lossy(&unzip_result.stderr);
-            return Err(format!("解压 Python 失败: {}", stderr));
-        }
+    if !unzip_result.status.success() {
+        let stderr = String::from_utf8_lossy(&unzip_result.stderr);
+        return Err(format!("解压 Python 失败: {}", stderr));
     }
 
     std::fs::remove_file(&zip_path).ok();
@@ -748,28 +750,25 @@ fn download_bundled_python(data_dir: &Path) -> Result<PathBuf, String> {
         return Err("Python 解压后未找到 python.exe".to_string());
     }
 
-    // embeddable Python 没有 pip，用 get-pip.py 安装
-    let getpip_url = "http://175.27.242.158:5000/download/get-pip.py";
-    let getpip_path = data_dir.join("get-pip.py");
+    // embeddable Python 没有 pip，用本地 get-pip.py 安装
+    let getpip_path = {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let gp_paths = [
+            exe_dir.join("resources").join("get-pip.py"),
+            exe_dir.join("get-pip.py"),
+        ];
+        gp_paths.iter().find(|p| p.exists()).cloned()
+    };
 
-    let pip_client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-    if let Ok(pip_response) = pip_client.get(getpip_url).send() {
-        if pip_response.status().is_success() {
-            if let Ok(pip_bytes) = pip_response.bytes() {
-                std::fs::write(&getpip_path, &pip_bytes).ok();
-            }
-        }
-    }
-
-    if getpip_path.exists() {
+    if let Some(ref gp) = getpip_path {
         let _ = std::process::Command::new(&python_exe)
-            .args([getpip_path.to_string_lossy().as_ref(), "--quiet"])
+            .args([gp.to_string_lossy().as_ref(), "--quiet"])
             .creation_flags(0x08000000)
             .output();
-        std::fs::remove_file(&getpip_path).ok();
+        // get-pip.py 运行完自行删除
     }
 
     // 安装 server.py 需要的依赖
