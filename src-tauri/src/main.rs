@@ -671,13 +671,13 @@ fn bundled_python_ok(data_dir: &Path) -> Option<PathBuf> {
     if major < 3 || (major == 3 && minor < 10) {
         return None;
     }
-    // 检查 pyyaml 依赖是否已安装
-    let pip_check = std::process::Command::new(&python_exe)
-        .args(["-m", "pip", "show", "pyyaml"])
+    // 检查 pyyaml 依赖是否已安装（用 import 测试，不依赖 pip show）
+    let import_check = std::process::Command::new(&python_exe)
+        .args(["-c", "import yaml; import fastapi; import uvicorn"])
         .creation_flags(0x08000000)
         .output()
         .ok()?;
-    if !pip_check.status.success() {
+    if !import_check.status.success() {
         return None;
     }
     Some(python_exe)
